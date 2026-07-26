@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Kaspi AutoPrice{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css?v=archive1">
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+</head>
+<body>
+<div class="ambient ambient-one"></div>
+<div class="ambient ambient-two"></div>
+<div class="app-shell">
+  {% if user %}
+  <aside class="sidebar glass-panel">
+    <a class="brand" href="/dashboard">
+      <span class="brand-mark">K</span>
+      <span class="brand-copy"><b>Kaspi AutoPrice</b><small>Premium workspace</small></span>
+    </a>
+
+    <nav class="nav" aria-label="Главное меню">
+      <a href="/dashboard" class="nav-link" data-icon="⌘"><span>Панель</span></a>
+      <a href="/stores" class="nav-link" data-icon="◆"><span>Выбор магазина</span></a>
+      <a href="/products" class="nav-link" data-icon="▣"><span>Товары и автопрайс</span></a>
+      <a href="/price-lists" class="nav-link" data-icon="▤"><span>Прайс-листы</span></a>
+      <a href="/automation" class="nav-link">XML авто</a>
+      <a href="/android" class="nav-link">Android</a>
+      <a href="/history" class="nav-link" data-icon="↗"><span>История</span></a>
+      <a href="/admin" class="nav-link" data-icon="⚙"><span>Система</span></a>
+    </nav>
+  </aside>
+  {% endif %}
+
+  <main class="main">
+    {% if user %}
+    <header class="topbar glass-panel">
+      <button class="mobile-menu" type="button" aria-label="Открыть меню">☰</button>
+      <div class="topbar-title">
+        <small>Рабочее пространство</small>
+        <h3>{{ user.display_name if user.display_name else 'admin' }}</h3>
+      </div>
+      <div class="top-actions">
+        <a class="btn btn-soft" href="/stores">Магазины</a>
+        <a class="btn btn-soft" href="/price-lists">Прайс-листы</a>
+        <a class="btn btn-primary" href="/products">Автопрайс</a>
+        <form method="post" action="/logout"><button class="btn btn-ghost" type="submit">Выйти</button></form>
+      </div>
+    </header>
+    {% endif %}
+
+    <div class="content-wrap">
+      {% block content %}
+        {% block main %}{% endblock %}
+        {% block page %}{% endblock %}
+        {% block body_content %}{% endblock %}
+      {% endblock %}
+    </div>
+  </main>
+</div>
+<script src="/static/js/app.js?v=archive1"></script>
+</body>
+</html>

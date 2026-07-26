@@ -1,0 +1,13 @@
+[Unit]
+Description=Kaspi SaaS Pro web
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/kaspi_saas_pro
+EnvironmentFile=/opt/kaspi_saas_pro/.env
+ExecStart=/opt/kaspi_saas_pro/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

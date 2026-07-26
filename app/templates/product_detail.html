@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — Kaspi AutoPrice{% endblock %}
+{% block content %}
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+
+<section class="hero reveal">
+  <div class="hero-copy">
+    <p class="eyebrow">Product settings</p>
+    <h1>{{ product.name }}</h1>
+    <p class="lead muted">SKU: {{ product.kaspi_sku }}{% if product.url %} · <a class="link" href="{{ product.url }}" target="_blank">Открыть на Kaspi</a>{% endif %}</p>
+    <p class="muted">Автопрайс работает только через полный ACTIVE.xlsx: система обновляет строку SKU внутри полного файла.</p>
+  </div>
+  <div class="hero-actions">
+    <form method="post" action="/pricing/refresh/{{ product.id }}"><button class="btn btn-soft">Загрузить конкурентов</button></form>
+    <form method="post" action="/pricing/apply/{{ product.id }}" enctype="multipart/form-data" class="mini-form" data-download-form>
+      <label class="file-pill">ACTIVE.xlsx <input type="file" name="template" accept=".xlsx" required></label>
+      <button class="btn btn-primary">Скачать Excel для строки</button>
+    </form>
+  </div>
+</section>
+
+<section class="metrics reveal-group">
+  <div class="metric premium-card"><span>Текущая цена</span><strong>{{ product.current_price|money }}</strong></div>
+  <div class="metric premium-card"><span>Минимум</span><strong>{{ product.min_price|money }}</strong></div>
+  <div class="metric premium-card"><span>Максимум</span><strong>{{ product.max_price|money }}</strong></div>
+  <div class="metric premium-card"><span>Остаток</span><strong>{{ product.stock }}</strong></div>
+</section>
+
+<section class="grid-2">
+  <form class="premium-card form reveal" method="post" action="/products/{{ product.id }}/settings">
+    <div class="card-head"><div><p class="eyebrow">Configuration</p><h2>Настройки товара</h2><p class="muted">Подтвердите артикул, цену, лимиты и правило автопрайса.</p></div><span class="badge {{ 'on' if product.auto_pricing_enabled else 'status-pending' }}">{{ 'готов' if product.auto_pricing_enabled else 'проверить' }}</span></div>
+    <label>SKU / артикул Kaspi<input name="kaspi_sku" value="{{ product.kaspi_sku }}" required></label>
+    <label>Название<input name="name" value="{{ product.name }}" required></label>
+    <label>Ссылка Kaspi<input name="url" value="{{ product.url or '' }}" placeholder="https://kaspi.kz/shop/p/...-108692468/"></label>
+    <div class="form-grid">
+      <label>Текущая цена<input name="current_price" type="number" value="{{ product.current_price|int }}"></label>
+      <label>Остаток<input name="stock" type="number" value="{{ product.stock or 0 }}"></label>
+      <label>Мин. цена<input name="min_price" type="number" value="{{ product.min_price|int }}"></label>
+      <label>Макс. цена<input name="max_price" type="number" value="{{ product.max_price|int }}"></label>
+      <label>Себестоимость<input name="cost_price" type="number" value="{{ product.cost_price|int }}"></label>
+      <label>Статус
+        <select name="status">
+          <option value="active" {% if product.status.value == 'active' %}selected{% endif %}>Активен</option>
+          <option value="paused" {% if product.status.value == 'paused' %}selected{% endif %}>Пауза</option>
+          <option value="out_of_stock" {% if product.status.value == 'out_of_stock' %}selected{% endif %}>Нет остатка</option>
+          <option value="archived" {% if product.status.value == 'archived' %}selected{% endif %}>Архив</option>
+        </select>
+      </label>
+    </div>
+    <label class="check-row"><input type="checkbox" name="auto_pricing_enabled" value="on" {% if product.auto_pricing_enabled %}checked{% endif %}> Включить автоцену для этого товара</label>
+    <hr>
+    {% set rule = product.pricing_rule %}
+    <p class="eyebrow">Pricing rule</p>
+    <div class="form-grid">
+      <label>Стратегия
+        <select name="strategy">
+          <option value="beat_by_step" {% if rule and rule.strategy.value == 'beat_by_step' %}selected{% endif %}>Ниже конкурента на шаг</option>
+          <option value="match_min" {% if rule and rule.strategy.value == 'match_min' %}selected{% endif %}>Сравнять с минимумом</option>
+          <option value="top_3_average" {% if rule and rule.strategy.value == 'top_3_average' %}selected{% endif %}>Средняя топ-3</option>
+          <option value="margin_protect" {% if rule and rule.strategy.value == 'margin_protect' %}selected{% endif %}>Защита маржи</option>
+          <option value="manual" {% if rule and rule.strategy.value == 'manual' %}selected{% endif %}>Ручной</option>
+        </select>
+      </label>
+      <label>Снижать на, ₸<input name="beat_step" type="number" value="{{ (rule.beat_step if rule else 10)|int }}"></label>
+      <label>Макс. изменение, %<input name="max_change_percent_per_run" type="number" value="{{ (rule.max_change_percent_per_run if rule else 20)|int }}"></label>
+      <label>Мин. маржа, %<input name="min_margin_percent" type="number" value="{{ (rule.min_margin_percent if rule else 8)|int }}"></label>
+    </div>
+    <label>Игнорировать продавцов<textarea name="ignore_sellers" placeholder="Название продавца, ещё один продавец">{{ rule.ignore_sellers if rule else '' }}</textarea></label>
+    <button class="btn btn-primary">Сохранить настройки</button>
+  </form>
+
+  <div class="premium-card reveal">
+    <p class="eyebrow">Safe checklist</p>
+    <h2>Безопасная проверка</h2>
+    <div class="checklist">
+      <div><span>1</span><p>Сохраните настройки товара.</p></div>
+      <div><span>2</span><p>Загрузите конкурентов — цена в Kaspi не меняется.</p></div>
+      <div><span>3</span><p>Выберите полный ACTIVE.xlsx и скачайте готовый файл.</p></div>
+      <div><span>4</span><p>Откройте Excel и проверьте строку товара перед загрузкой.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="grid-2">
+  <div class="premium-card reveal"><div class="card-head"><div><p class="eyebrow">Market</p><h2>Конкуренты</h2></div></div><div class="stack">{% for o in product.competitor_offers %}<div class="list-item"><div><b>#{{ o.position }} {{ o.seller_name }}</b><small>доставка {{ o.delivery_days }} дн.</small></div><span>{{ o.price|money }}</span></div>{% endfor %}{% if not product.competitor_offers %}<p class="muted">Конкуренты ещё не загружены.</p>{% endif %}</div></div>
+  <div class="premium-card reveal"><div class="card-head"><div><p class="eyebrow">History</p><h2>Подтверждённая история</h2></div></div><div class="stack">{% for h in confirmed_history %}<div class="list-item"><div><b>{{ h.old_price|money }} → {{ h.new_price|money }}</b><small>{{ h.reason }}</small></div><span>{{ h.created_at }}</span></div>{% endfor %}{% if not confirmed_history %}<p class="muted">Пока нет подтверждённых изменений.</p>{% endif %}</div></div>
+</section>
+{% endblock %}

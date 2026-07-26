@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Автопрайс — Kaspi AutoPrice{% endblock %}
+{% block content %}
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+
+<section class="hero reveal">
+  <div class="hero-copy">
+    <p class="eyebrow">Pricing workspace</p>
+    <h1>Автопрайс через полный Excel Kaspi</h1>
+    <p class="lead muted">Безопасный процесс: загружаешь полный ACTIVE.xlsx, система обновляет только выбранные SKU и возвращает новый полный файл.</p>
+  </div>
+  <div class="hero-actions">
+    <a class="btn btn-soft transition-link" href="/stores">Выбор магазина</a>
+    <a class="btn btn-soft" href="/api/reports/products.csv">Экспорт CSV</a>
+  </div>
+</section>
+
+<section class="store-focus premium-card reveal">
+  <div>
+    <p class="eyebrow">Магазин</p>
+    <h2>{{ selected_store.name if selected_store else 'Магазин не выбран' }}</h2>
+    <p class="muted">Все действия ниже применяются только к выбранному магазину.</p>
+  </div>
+  <form method="get" class="inline-form compact-select">
+    <select name="store_id" onchange="this.form.submit()">
+      {% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }} · {{ s.city }}</option>{% endfor %}
+    </select>
+    <input type="hidden" name="q" value="{{ q }}">
+  </form>
+</section>
+
+<section class="metrics reveal-group">
+  <div class="metric premium-card"><span>Показано товаров</span><strong>{{ products|length }}</strong><small>по выбранному магазину</small></div>
+  <div class="metric premium-card"><span>Готовы к автоцене</span><strong>{{ ready_count }}</strong><small>лимиты подтверждены</small></div>
+  <div class="metric premium-card"><span>Нужно настроить</span><strong>{{ pending_count }}</strong><small>лимиты не готовы</small></div>
+  <div class="metric premium-card"><span>Режим</span><strong>Full Excel</strong><small>безопасный экспорт</small></div>
+</section>
+
+<section class="flow premium-card reveal">
+  <div class="flow-step"><span>01</span><b>Импорт</b><small>Загрузи ACTIVE.xlsx из Kaspi.</small></div>
+  <div class="flow-step"><span>02</span><b>Лимиты</b><small>Укажи минимум, максимум и маржу.</small></div>
+  <div class="flow-step"><span>03</span><b>Расчёт</b><small>Система обновит цены по правилам.</small></div>
+  <div class="flow-step"><span>04</span><b>Проверка</b><small>Открой Excel перед загрузкой.</small></div>
+</section>
+
+<section class="grid-2">
+  <form class="premium-card form reveal" method="post" action="/products/import-kaspi-excel" enctype="multipart/form-data">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <div class="card-head"><div><p class="eyebrow">Step 1</p><h2>Импорт товаров из Kaspi Excel</h2><p class="muted">Загрузите полный ACTIVE.xlsx. Это только добавляет товары в базу сайта — цены в Kaspi не меняются.</p></div><span class="badge on">безопасно</span></div>
+    <label>Файл ACTIVE.xlsx<input type="file" name="file" accept=".xlsx" required></label>
+    <button class="btn btn-primary">Импортировать товары</button>
+  </form>
+
+  <form id="bulk-limit-form" class="premium-card form reveal selection-aware-form" method="post" action="/products/bulk-setup">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <input type="hidden" name="q_filter" value="{{ q }}">
+    <div class="card-head"><div><p class="eyebrow">Step 2</p><h2>Массовые лимиты</h2><p class="muted">Можно настроить все неподтверждённые товары, первые N товаров или только отмеченные позиции.</p></div><span class="badge">лимиты</span></div>
+    <div class="form-grid">
+      <label>Минимум ниже текущей, %<input name="min_down_percent" type="number" value="12" step="1"></label>
+      <label>Максимум выше текущей, %<input name="max_up_percent" type="number" value="15" step="1"></label>
+      <label>Себестоимость от цены, %<input name="cost_percent" type="number" value="65" step="1"></label>
+      <label>Макс. изменение за раз, %<input name="max_change_percent_per_run" type="number" value="20" step="1"></label>
+      <label>Ниже конкурента на, ₸<input name="beat_step" type="number" value="2" min="0" step="1"></label>
+      <label>Мин. маржа, %<input name="min_margin_percent" type="number" value="8" step="1"></label>
+      <label>Сколько товаров настроить<input name="limit_count" type="number" value="0" min="0" step="1" placeholder="0 = все неподтверждённые"></label>
+      <div class="mini-hint"><b data-selected-count>0</b> выбрано вручную. Если выбрать товары галочками, лимиты применятся только к ним.</div>
+    </div>
+    <button class="btn btn-soft">Применить лимиты</button>
+  </form>
+</section>
+
+<section class="premium-card xl-card reveal">
+  <div class="card-head">
+    <div><p class="eyebrow">Step 3</p><h2>Скачать готовый полный прайс</h2><p class="muted">Загрузите полный ACTIVE.xlsx. Система рассчитает цены только для подтверждённых товаров и вернёт новый полный файл.</p></div>
+    <span class="badge on">Full Excel</span>
+  </div>
+  <form id="run-pricing-form" method="post" action="/pricing/run-all" enctype="multipart/form-data" data-download-form class="download-form form selection-aware-form">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <input type="hidden" name="q_filter" value="{{ q }}">
+    <label>Полный шаблон Kaspi .xlsx<input type="file" name="template" accept=".xlsx" required></label>
+    <label>Сколько товаров считать<input name="limit_count" type="number" value="0" min="0" step="1" placeholder="0 = все готовые / выбранные"></label>
+    <button class="btn btn-primary">Рассчитать и скачать</button>
+  </form>
+  <div class="selection-note">
+    <span>Выбрано вручную: <b data-selected-count>0</b></span>
+    <small>Если отметить товары галочками ниже, Excel изменит только эти SKU. Если галочек нет, можно указать количество.</small>
+  </div>
+  <div class="progress-panel" data-progress-panel hidden>
+    <div class="progress-head"><b data-progress-title>Подготовка Excel</b><span data-progress-percent>0%</span></div>
+    <div class="progress-track"><i data-progress-bar></i></div>
+    <p data-progress-text>Проверяем выбранные товары и конкурентов. Страница может не обновляться, пока файл готовится.</p>
+  </div>
+  <div class="notice info compact"><b>Важно:</b> файл всё равно будет полным ACTIVE.xlsx. Просто цены будут изменены только у выбранных товаров или у указанного количества.</div>
+</section>
+
+<section class="premium-card reveal">
+  <div class="card-head">
+    <div><p class="eyebrow">Auto XML</p><h2>XML автозагрузка</h2><p class="muted">Хочешь, чтобы Kaspi сам забирал цены без ручной загрузки Excel? Создай XML-ссылку и вставь её в Kaspi.</p></div>
+    <a class="btn btn-primary" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Настроить XML</a>
+  </div>
+</section>
+
+<section class="premium-card reveal archive-card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Archive</p>
+      <h2>Готовые Excel-файлы</h2>
+      <p class="muted">Каждый рассчитанный прайс сохраняется здесь. Можно скачать повторно и посмотреть размер, дату, количество строк и сколько товаров считалось.</p>
+    </div>
+    <a class="btn btn-soft" href="/price-lists{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть архив</a>
+  </div>
+  <div class="archive-grid">
+    {% for item in recent_price_lists %}
+    <div class="archive-item">
+      <div>
+        <b>{{ item.filename }}</b>
+        <small>{{ item.created_at }} · {{ item.size_label }} · {{ item.scope }}</small>
+      </div>
+      <div class="archive-stats">
+        <span>Строк в Excel: <b>{{ item.total_rows }}</b></span>
+        <span>Считалось: <b>{{ item.processed_products }}</b></span>
+        <span>Новых цен: <b>{{ item.changed }}</b></span>
+      </div>
+      <a class="btn btn-small" href="/price-lists/download/{{ item.id }}">Скачать</a>
+    </div>
+    {% endfor %}
+    {% if not recent_price_lists %}
+    <div class="empty-archive">Пока нет готовых Excel-файлов. После расчёта полный прайс появится здесь автоматически.</div>
+    {% endif %}
+  </div>
+</section>
+
+{% if pending_products %}
+<section class="premium-card reveal">
+  <div class="card-head"><div><p class="eyebrow">Review</p><h2>Неподтверждённые товары</h2><p class="muted">Эти позиции требуют проверки лимитов перед автопрайсом.</p></div><span class="badge hot">{{ pending_count }} шт.</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Товар</th><th>Цена</th><th>Мин/макс</th><th>Статус</th><th></th></tr></thead>
+      <tbody>
+      {% for p in pending_products %}
+      <tr>
+        <td><a href="/products/{{ p.id }}">{{ p.name }}</a><small>{{ p.kaspi_sku }}</small></td>
+        <td>{{ p.current_price|money }}</td>
+        <td>{{ p.min_price|money }} — {{ p.max_price|money }}</td>
+        <td><span class="badge status-pending">проверить</span></td>
+        <td><a class="btn btn-small" href="/products/{{ p.id }}">Настроить</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="accordion muted-section reveal">
+  <button class="accordion-trigger premium-card" type="button" data-accordion="manual-tools"><span>Дополнительные инструменты</span><b>＋</b></button>
+  <div class="accordion-content" id="manual-tools">
+    <section class="grid-2">
+      <form class="premium-card form" method="post" action="/products">
+        <h2>Добавить товар вручную</h2>
+        <p class="muted">Для теста или редкой позиции. Для магазина лучше использовать ACTIVE.xlsx.</p>
+        <label>Магазин<select name="store_id" required>{% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}</select></label>
+        <label>SKU / артикул Kaspi<input name="kaspi_sku" required placeholder="108692468_218383169"></label>
+        <label>Ссылка Kaspi<input name="url" placeholder="https://kaspi.kz/shop/p/...-108692468/"></label>
+        <label>Название<input name="name" required placeholder="Название товара"></label>
+        <div class="form-grid"><label>Цена<input name="current_price" type="number" value="0"></label><label>Мин<input name="min_price" type="number" value="0"></label><label>Макс<input name="max_price" type="number" value="0"></label><label>Себестоимость<input name="cost_price" type="number" value="0"></label></div>
+        <button class="btn btn-soft">Добавить</button>
+      </form>
+      <form class="premium-card form" method="post" action="/products/import" enctype="multipart/form-data">
+        <h2>Импорт CSV</h2>
+        <p class="muted">Только для своей таблицы CSV. ACTIVE.xlsx загружайте в верхний блок.</p>
+        <input type="file" name="file" accept=".csv" required>
+        <button class="btn btn-soft">Загрузить CSV</button>
+      </form>
+    </section>
+  </div>
+</section>
+
+<section class="premium-card product-list reveal">
+  <div class="card-head"><div><p class="eyebrow">Catalog</p><h2>Товары выбранного магазина</h2><p class="muted">Поиск работает по названию и SKU.</p></div></div>
+  <form class="searchbar smart-search" method="get">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <input name="q" value="{{ q }}" placeholder="Поиск по названию или SKU">
+    <select name="view">
+      <option value="all" {% if view == 'all' %}selected{% endif %}>Все товары</option>
+      <option value="ready" {% if view == 'ready' %}selected{% endif %}>Готовые к автоцене</option>
+      <option value="pending" {% if view == 'pending' %}selected{% endif %}>Нужно настроить</option>
+      <option value="active" {% if view == 'active' %}selected{% endif %}>Активные</option>
+    </select>
+    <input class="limit-input" name="show_limit" type="number" min="50" max="2000" step="50" value="{{ show_limit or 500 }}" title="Сколько строк показать">
+    <button class="btn btn-soft">Найти</button>
+  </form>
+  <div class="selection-toolbar">
+    <label class="check-inline"><input type="checkbox" data-select-all> Выбрать показанные</label>
+    <span class="selection-chip">Выбрано: <b data-selected-count>0</b></span>
+    <button class="btn btn-small btn-ghost" type="button" data-clear-selection>Снять выбор</button>
+    <small>Галочки влияют на “Применить лимиты” и “Рассчитать Excel”.</small>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th class="check-cell"></th><th>Товар</th><th>Цена</th><th>Лимиты</th><th>Авто</th><th></th></tr></thead>
+      <tbody>
+      {% for p in products %}
+      <tr>
+        <td class="check-cell"><input class="product-check" type="checkbox" value="{{ p.id }}" data-sku="{{ p.kaspi_sku }}"></td>
+        <td><a href="/products/{{ p.id }}">{{ p.name }}</a><small>{{ p.kaspi_sku }}</small></td>
+        <td>{{ p.current_price|money }}</td>
+        <td>{{ p.min_price|money }} — {{ p.max_price|money }}</td>
+        <td><span class="badge {{ 'on' if p.auto_pricing_enabled else 'status-pending' }}">{{ 'включено' if p.auto_pricing_enabled else 'выкл' }}</span></td>
+        <td><a class="btn btn-small" href="/products/{{ p.id }}">Открыть</a></td>
+      </tr>
+      {% endfor %}
+      {% if not products %}<tr><td colspan="6" class="muted">Товаров нет. Сначала импортируйте ACTIVE.xlsx.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

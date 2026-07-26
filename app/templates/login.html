@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Вход — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="login-page reveal">
+  <div class="login-hero">
+    <span class="pill">Premium SaaS · 2026</span>
+    <h1>Управление ценами Kaspi в одном дорогом интерфейсе</h1>
+    <p>Магазины, товары, лимиты, конкуренты и безопасный полный Excel-прайс в одном рабочем пространстве.</p>
+    <div class="login-grid">
+      <span>Full Excel</span><span>Stores</span><span>Limits</span><span>Safe mode</span>
+    </div>
+  </div>
+  <form class="premium-card login-card form" method="post" action="/login">
+    <p class="eyebrow">Welcome back</p>
+    <h2>Войти в панель</h2>
+    <label>Логин<input name="username" placeholder="admin" required></label>
+    <label>Пароль<input name="password" type="password" placeholder="ChangeMe123!" required></label>
+    <button class="btn btn-primary btn-wide">Войти</button>
+    <p class="muted">По умолчанию: admin / ChangeMe123!</p>
+  </form>
+</section>
+{% endblock %}

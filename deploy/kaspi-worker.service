@@ -1,0 +1,13 @@
+[Unit]
+Description=Kaspi SaaS Pro celery worker
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/kaspi_saas_pro
+EnvironmentFile=/opt/kaspi_saas_pro/.env
+ExecStart=/opt/kaspi_saas_pro/.venv/bin/celery -A app.worker.celery_app.celery_app worker --loglevel=info
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

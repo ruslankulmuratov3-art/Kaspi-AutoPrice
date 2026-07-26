@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Система — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero reveal">
+  <div class="hero-copy"><p class="eyebrow">System</p><h1>Системная панель</h1><p class="lead muted">Пользователи, уведомления и внутренние события проекта.</p></div>
+</section>
+<section class="grid-2">
+  <div class="premium-card reveal"><div class="card-head"><div><p class="eyebrow">Users</p><h2>Пользователи</h2></div></div><div class="stack">{% for u in users %}<div class="list-item"><div><b>{{ u.username }}</b><small>{{ u.email }}</small></div><span class="badge">{{ u.role.value }}</span></div>{% endfor %}</div></div>
+  <div class="premium-card reveal"><div class="card-head"><div><p class="eyebrow">Alerts</p><h2>Уведомления</h2></div></div><div class="stack">{% for a in alerts %}<div class="list-item"><div><b>{{ a.title }}</b><small>{{ a.body }}</small></div><span class="badge">{{ a.type.value }}</span></div>{% endfor %}</div></div>
+</section>
+{% endblock %}

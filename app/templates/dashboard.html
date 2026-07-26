@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Панель — Kaspi AutoPrice
+
+<section class="premium-card reveal archive-card">
+  <div class="card-head">
+    <div><p class="eyebrow">Excel Archive</p><h2>Последние готовые прайс-листы</h2><p class="muted">Сохранённые файлы можно скачать повторно.</p></div>
+    <a class="link" href="/price-lists{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть архив</a>
+  </div>
+  <div class="archive-grid compact-archive">
+    {% for item in recent_price_lists %}
+    <div class="archive-item">
+      <div><b>{{ item.filename }}</b><small>{{ item.created_at }} · {{ item.size_label }}</small></div>
+      <div class="archive-stats"><span>Считалось: <b>{{ item.processed_products }}</b></span><span>Новых цен: <b>{{ item.changed }}</b></span></div>
+      <a class="btn btn-small" href="/price-lists/download/{{ item.id }}">Скачать</a>
+    </div>
+    {% endfor %}
+    {% if not recent_price_lists %}<div class="empty-archive">Пока нет готовых Excel-файлов.</div>{% endif %}
+  </div>
+</section>
+
+{% endblock %}
+{% block content %}
+<section class="hero reveal hero-premium">
+  <div class="hero-copy">
+    <p class="eyebrow">Dashboard</p>
+    <h1>Контроль цен и конкурентов</h1>
+    <p class="lead muted">Работай безопасно: загружай полный ACTIVE.xlsx, настраивай лимиты и скачивай готовый полный прайс-лист для Kaspi.</p>
+  </div>
+  <div class="hero-actions">
+    <a class="btn btn-primary transition-link" href="/stores">Выбрать магазин</a>
+    <a class="btn btn-soft" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть автопрайс</a>
+  </div>
+</section>
+
+<section class="store-focus premium-card reveal">
+  <div>
+    <p class="eyebrow">Текущий магазин</p>
+    <h2>{{ selected_store.name if selected_store else 'Магазин не выбран' }}</h2>
+    <p class="muted">Выбери магазин, потом импортируй товары и настрой безопасные лимиты.</p>
+  </div>
+  {% if stores %}
+  <form method="get" class="inline-form compact-select">
+    <select name="store_id" onchange="this.form.submit()">
+      {% for s in stores %}
+      <option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  {% else %}
+  <a class="btn btn-primary" href="/stores">Добавить магазин</a>
+  {% endif %}
+</section>
+
+<section class="metrics reveal-group">
+  <div class="metric premium-card"><span>Товары</span><strong>{{ metrics.products if metrics and metrics.products is defined else 0 }}</strong><small>в базе</small></div>
+  <div class="metric premium-card"><span>Готовы</span><strong>{{ ready_count|default(0) }}</strong><small>к автопрайсу</small></div>
+  <div class="metric premium-card"><span>Нужно настроить</span><strong>{{ pending_count|default(0) }}</strong><small>лимиты и себестоимость</small></div>
+  <div class="metric premium-card"><span>Средняя цена</span><strong>{{ metrics.avg_price|money if metrics and metrics.avg_price is defined else '0 ₸' }}</strong><small>по локальной базе</small></div>
+</section>
+
+<section class="flow premium-card reveal">
+  <div class="flow-step"><span>01</span><b>Выбери магазин</b><small>Вся работа идёт отдельно по каждому магазину.</small></div>
+  <div class="flow-step"><span>02</span><b>Импортируй ACTIVE.xlsx</b><small>Файл должен быть полным, не на один товар.</small></div>
+  <div class="flow-step"><span>03</span><b>Настрой лимиты</b><small>Минимум, максимум, себестоимость и шаг изменения.</small></div>
+  <div class="flow-step"><span>04</span><b>Скачай Excel</b><small>Проверь файл и вручную загрузи в Kaspi.</small></div>
+</section>
+
+<section class="grid-2">
+  <div class="premium-card reveal">
+    <div class="card-head"><div><p class="eyebrow">Products</p><h2>Последние товары</h2></div><a class="link" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Все товары</a></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Товар</th><th>Цена</th><th>Статус</th></tr></thead>
+        <tbody>
+        {% for p in products %}
+        <tr>
+          <td><a href="/products/{{ p.id }}">{{ p.name }}</a><small>{{ p.kaspi_sku }}</small></td>
+          <td>{{ p.current_price|money }}</td>
+          <td><span class="badge {{ 'on' if p.auto_pricing_enabled else 'status-pending' }}">{{ 'готов' if p.auto_pricing_enabled else 'настроить' }}</span></td>
+        </tr>
+        {% endfor %}
+        {% if not products %}<tr><td colspan="3" class="muted">В выбранном магазине пока нет товаров.</td></tr>{% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="premium-card reveal">
+    <div class="card-head"><div><p class="eyebrow">Activity</p><h2>Прайс-листы и события</h2></div><span class="badge hot">{{ metrics.unread_alerts if metrics and metrics.unread_alerts is defined else 0 }}</span></div>
+    <div class="feed">
+      {% for a in alerts %}
+      <div class="feed-item"><b>{{ a.title }}</b><p>{{ a.body }}</p><small>{{ a.created_at }}</small></div>
+      {% endfor %}
+      {% if not alerts %}<p class="muted">Пока событий нет.</p>{% endif %}
+    </div>
+  </div>
+</section>
+
+
+<section class="premium-card reveal archive-card">
+  <div class="card-head">
+    <div><p class="eyebrow">Excel Archive</p><h2>Последние готовые прайс-листы</h2><p class="muted">Сохранённые файлы можно скачать повторно.</p></div>
+    <a class="link" href="/price-lists{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть архив</a>
+  </div>
+  <div class="archive-grid compact-archive">
+    {% for item in recent_price_lists %}
+    <div class="archive-item">
+      <div><b>{{ item.filename }}</b><small>{{ item.created_at }} · {{ item.size_label }}</small></div>
+      <div class="archive-stats"><span>Считалось: <b>{{ item.processed_products }}</b></span><span>Новых цен: <b>{{ item.changed }}</b></span></div>
+      <a class="btn btn-small" href="/price-lists/download/{{ item.id }}">Скачать</a>
+    </div>
+    {% endfor %}
+    {% if not recent_price_lists %}<div class="empty-archive">Пока нет готовых Excel-файлов.</div>{% endif %}
+  </div>
+</section>
+
+{% endblock %}
