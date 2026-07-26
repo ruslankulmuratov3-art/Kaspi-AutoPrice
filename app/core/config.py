@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     MAX_PRICE_CHANGE_PERCENT: float = 30.0
     DEFAULT_CURRENCY: str = 'KZT'
 
+    # XML Autopilot: после первого импорта ACTIVE.xlsx сайт сам пересобирает XML-прайс.
+    # Kaspi забирает ссылку /kaspi-feed/{store_id}.xml по своему расписанию.
+    KASPI_AUTOPILOT_ENABLED: bool = True
+    KASPI_AUTOPILOT_INTERVAL_MINUTES: int = 60
+    KASPI_AUTOPILOT_STARTUP_DELAY_SECONDS: int = 25
+    KASPI_AUTOPILOT_MAX_PRODUCTS_PER_RUN: int = 5000
+    KASPI_AUTOPILOT_WAREHOUSE_ID: str = 'PP1'
+    KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE: bool = True
+    KASPI_AUTOPILOT_DELAY_SECONDS: float = 0.0
+    KASPI_XML_REBUILD_ON_PULL: bool = True
+    KASPI_XML_STALE_AFTER_MINUTES: int = 55
+
     SMTP_HOST: str = ''
     SMTP_PORT: int = 587
     SMTP_USER: str = ''

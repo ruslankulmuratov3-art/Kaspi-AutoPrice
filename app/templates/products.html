@@ -7,8 +7,8 @@
 <section class="hero reveal">
   <div class="hero-copy">
     <p class="eyebrow">Pricing workspace</p>
-    <h1>Автопрайс через полный Excel Kaspi</h1>
-    <p class="lead muted">Безопасный процесс: загружаешь полный ACTIVE.xlsx, система обновляет только выбранные SKU и возвращает новый полный файл.</p>
+    <h1>Автопрайс и XML-автопилот</h1>
+    <p class="lead muted">Основной режим: один раз загружаешь ACTIVE.xlsx, применяешь лимиты, дальше XML-автопилот сам пересобирает цены. Excel остаётся как ручной запасной вариант.</p>
   </div>
   <div class="hero-actions">
     <a class="btn btn-soft transition-link" href="/stores">Выбор магазина</a>
@@ -96,8 +96,8 @@
 
 <section class="premium-card reveal">
   <div class="card-head">
-    <div><p class="eyebrow">Auto XML</p><h2>XML автозагрузка</h2><p class="muted">Хочешь, чтобы Kaspi сам забирал цены без ручной загрузки Excel? Создай XML-ссылку и вставь её в Kaspi.</p></div>
-    <a class="btn btn-primary" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Настроить XML</a>
+    <div><p class="eyebrow">Auto XML</p><h2>XML автозагрузка</h2><p class="muted">Основной автоматический режим: Kaspi сам забирает XML-ссылку. После первого импорта Excel вручную больше не нужен для регулярного обновления цен.</p></div>
+    <a class="btn btn-primary" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть XML-автопилот</a>
   </div>
 </section>
 

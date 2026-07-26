@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}XML автозагрузка — Kaspi AutoPrice{% endblock %}
+{% block title %}XML автопилот — Kaspi AutoPrice{% endblock %}
 {% block content %}
 <section class="hero-card reveal">
-  <p class="eyebrow">Official Auto Feed</p>
-  <h1>XML автозагрузка цен</h1>
-  <p class="muted big">Kaspi сам забирает XML-файл с твоего сайта. Мы сохраняем каждую версию XML и показываем, когда ссылку открывали.</p>
+  <p class="eyebrow">XML Autopilot</p>
+  <h1>Автопилот цен через XML</h1>
+  <p class="muted big">Один раз импортируешь ACTIVE.xlsx, применяешь лимиты, дальше сайт сам пересобирает XML. Kaspi забирает эту ссылку примерно раз в час, если файл изменился.</p>
   <div class="hero-actions">
     <a class="btn btn-primary" href="{{ feed_url }}" target="_blank">Открыть XML</a>
     <a class="btn btn-soft" href="/xml-history?store_id={{ selected_store_id }}">История XML</a>
@@ -29,22 +29,57 @@
   </form>
 
   <div class="premium-card reveal">
-    <div class="card-head"><div><p class="eyebrow">Feed URL</p><h2>Ссылка для Kaspi</h2><p class="muted">Эту ссылку вставляешь в кабинете продавца: Товары → Загрузить прайс-лист → Автоматическая загрузка.</p></div><span class="badge on">XML</span></div>
+    <div class="card-head"><div><p class="eyebrow">Feed URL</p><h2>Ссылка для Kaspi</h2><p class="muted">Вставь её в кабинете продавца: Товары → Загрузить прайс-лист → Автоматическая загрузка.</p></div><span class="badge on">XML</span></div>
     <div class="copy-box"><code>{{ feed_url }}</code></div>
-    <p class="muted">Важно: 127.0.0.1 Kaspi не видит. На Render нужна ссылка вида https://kaspi-autoprice.onrender.com/kaspi-feed/1.xml</p>
+    <p class="muted">На Render ссылка должна быть вида https://kaspi-autoprice.onrender.com/kaspi-feed/1.xml. Локальный 127.0.0.1 Kaspi не видит.</p>
   </div>
+</section>
+
+<section class="premium-card xl-card reveal autopilot-panel">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Auto mode</p>
+      <h2>Автопилот включён</h2>
+      <p class="muted">Сайт автоматически пересобирает XML каждые 60 минут, пока Render активен. Если Kaspi откроет XML, а файл старше 55 минут, сайт попробует пересобрать XML прямо перед отдачей.</p>
+    </div>
+    <span class="badge on">сам обновляет</span>
+  </div>
+
+  <div class="metrics small-metrics">
+    <div class="metric premium-card"><span>Готовых товаров</span><strong>{{ ready_count }}</strong><small>пойдут в XML</small></div>
+    <div class="metric premium-card"><span>Последний XML</span><strong>{{ feed_record.changed if feed_record else 0 }}</strong><small>новых цен</small></div>
+    <div class="metric premium-card"><span>Последний pull</span><strong>{{ feed_pulls[0].accessed_at if feed_pulls else '—' }}</strong><small>когда открывали XML</small></div>
+  </div>
+
+  {% if autopilot_status %}
+  <div class="progress-panel visible">
+    <div class="progress-head"><b>{{ 'Автопилот считает' if autopilot_status.running else 'Последний автопилот' }}</b><span>{{ autopilot_status.percent or 0 }}%</span></div>
+    <div class="progress-track"><i style="width: {{ autopilot_status.percent or 0 }}%"></i></div>
+    <p>Обработано {{ autopilot_status.processed_now or autopilot_status.processed or 0 }} / {{ autopilot_status.total or autopilot_status.processed or 0 }} · изменено {{ autopilot_status.changed or 0 }} · ошибок {{ autopilot_status.errors or 0 }}</p>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/automation/run-now" class="form compact-form">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <label>Код склада / точки Kaspi
+      <input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}" placeholder="например PP1">
+    </label>
+    <button class="btn btn-primary">Запустить автопилот сейчас</button>
+  </form>
+
+  <div class="notice info compact"><b>Важно:</b> наш сайт показывает, когда XML создан и когда его открыли. Kaspi не отправляет нам отдельное подтверждение “цены применены”, поэтому финальный статус смотри в кабинете Kaspi → история загрузок.</div>
 </section>
 
 <section class="premium-card xl-card reveal">
   <div class="card-head">
-    <div><p class="eyebrow">Rebuild</p><h2>Пересобрать XML с новыми ценами</h2><p class="muted">Сайт проверит конкурентов, применит лимиты, сохранит свежий XML и список изменений по товарам.</p></div>
-    <span class="badge hot">осторожно</span>
+    <div><p class="eyebrow">Manual rebuild</p><h2>Ручная пересборка XML</h2><p class="muted">Обычно не нужна. Оставил как запасной вариант для теста, поиска или пересчёта первых N товаров.</p></div>
+    <span class="badge">резерв</span>
   </div>
   <form method="post" action="/automation/rebuild-xml" class="form">
     <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
     <div class="form-grid">
       <label>Код склада / точки Kaspi
-        <input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else '' }}" placeholder="например PP1 или код из раздела Склады и магазины">
+        <input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}" placeholder="например PP1">
       </label>
       <label>Сколько товаров пересчитать
         <input name="limit_count" type="number" value="100" min="0" step="1" placeholder="0 = все готовые">
@@ -53,9 +88,8 @@
         <input name="q_filter" placeholder="пусто = все">
       </label>
     </div>
-    <button class="btn btn-primary">Пересобрать XML</button>
+    <button class="btn btn-soft">Пересобрать вручную</button>
   </form>
-  <div class="notice info compact"><b>Важно:</b> мы можем точно показать, когда XML создан и когда его запросили. Но Kaspi не отправляет нам callback “цены применены”, поэтому финальную обработку смотри в кабинете Kaspi.</div>
 </section>
 
 <section class="premium-card reveal">
@@ -67,7 +101,7 @@
     <a class="btn btn-small" href="{{ feed_url }}" target="_blank">Скачать XML</a>
   </div>
   {% else %}
-  <div class="empty-archive">XML ещё не создан. Нажми “Пересобрать XML”.</div>
+  <div class="empty-archive">XML ещё не создан. Нажми “Запустить автопилот сейчас”.</div>
   {% endif %}
 </section>
 

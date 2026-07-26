@@ -103,3 +103,10 @@ button{border:0}
 .changed-row{background:rgba(236,253,243,.52)}
 .changed-row td{border-bottom-color:rgba(6,118,71,.13)}
 @media(max-width:820px){.inline-controls{grid-template-columns:1fr}.timeline-row small{white-space:normal}.compact-table{border-radius:16px}}
+
+/* XML autopilot patch */
+.autopilot-panel .small-metrics { margin: 18px 0; }
+.progress-panel.visible { display: block; }
+.compact-form { margin-top: 18px; }
+.compact-form label { max-width: 420px; }
+.copy-box code { word-break: break-all; white-space: normal; }

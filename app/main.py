@@ -9,6 +9,7 @@ from app.web.router import web_router
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import configure_logging, get_logger
+from app.services.autopilot_service import autopilot_service
 
 configure_logging()
 logger = get_logger(__name__)
@@ -36,10 +37,15 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix='/api')
 
     @app.on_event('startup')
-    def startup_event() -> None:
+    async def startup_event() -> None:
         if settings.AUTO_CREATE_TABLES:
             init_db()
+        autopilot_service.start()
         logger.info('Kaspi SaaS Pro started')
+
+    @app.on_event('shutdown')
+    async def shutdown_event() -> None:
+        await autopilot_service.stop()
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):

@@ -24,6 +24,7 @@ from app.services.price_list_service import price_list_service, PriceListError
 from app.services.price_list_import_service import price_list_import_service, PriceListImportError
 from app.services.generated_price_list_service import generated_price_list_service
 from app.services.xml_feed_service import xml_feed_service, XmlFeedError
+from app.services.autopilot_service import autopilot_service
 from app.web.templating import templates
 from app.web.deps import current_user_optional
 
@@ -60,6 +61,25 @@ def is_pending_product(product: Product) -> bool:
         or float(product.max_price or 0) <= 0
         or (float(product.max_price or 0) < float(product.min_price or 0) and float(product.max_price or 0) > 0)
     )
+
+
+def product_text_matches(product: Product, needle: str) -> bool:
+    """Надёжный поиск по названию, SKU и ссылке.
+
+    SQLite может плохо делать регистронезависимый поиск по кириллице,
+    поэтому финальный фильтр делаем в Python через casefold().
+    """
+    needle = ' '.join(str(needle or '').casefold().split())
+    if not needle:
+        return True
+    haystack = ' '.join([
+        str(product.name or ''),
+        str(product.kaspi_sku or ''),
+        str(product.url or ''),
+        str(getattr(product, 'brand', '') or ''),
+        str(getattr(product, 'category', '') or ''),
+    ]).casefold()
+    return needle in haystack
 
 
 @web_router.get('/', response_class=HTMLResponse)
@@ -215,9 +235,6 @@ def products_page(
     query = db.query(Product)
     if selected_store_id:
         query = query.filter(Product.store_id == selected_store_id)
-    if q:
-        like = f'%{q}%'
-        query = query.filter((Product.name.ilike(like)) | (Product.kaspi_sku.ilike(like)))
     if view == 'ready':
         query = query.filter(Product.auto_pricing_enabled == True, Product.min_price > 0, Product.max_price > 0)
     elif view == 'pending':
@@ -229,7 +246,13 @@ def products_page(
     except (TypeError, ValueError):
         show_limit = 500
     show_limit = max(50, min(show_limit, 2000))
-    products = query.order_by(Product.id.desc()).limit(show_limit).all()
+    # Для поиска по названию используем Python casefold(), чтобы кириллица искалась стабильнее.
+    source_limit = 10000 if q.strip() else show_limit
+    source_products = query.order_by(Product.id.desc()).limit(source_limit).all()
+    if q.strip():
+        products = [p for p in source_products if product_text_matches(p, q)][:show_limit]
+    else:
+        products = source_products
 
     pending_query = db.query(Product).filter(
         or_(Product.auto_pricing_enabled == False, Product.min_price <= 0, Product.max_price <= 0)
@@ -673,6 +696,7 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
     feed_record = xml_feed_service.get_record(selected_store_id) if selected_store_id else None
     feed_versions = xml_feed_service.list_versions(selected_store_id, limit=8) if selected_store_id else []
     feed_pulls = xml_feed_service.list_pulls(selected_store_id, limit=8) if selected_store_id else []
+    autopilot_status = autopilot_service.last_status(selected_store_id) if selected_store_id else None
     ready_count = 0
     if selected_store_id:
         ready_count = db.query(Product).filter(
@@ -694,12 +718,41 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
         'feed_record': feed_record,
         'feed_versions': feed_versions,
         'feed_pulls': feed_pulls,
+        'autopilot_status': autopilot_status,
         'ready_count': ready_count,
         'feed_url': feed_url,
         'android_url': android_url,
         'message': request.query_params.get('message', ''),
         'error': request.query_params.get('error', ''),
     })
+
+
+
+@web_router.post('/automation/run-now')
+async def autopilot_run_now_page(
+    request: Request,
+    store_id: int = Form(...),
+    warehouse_id: str = Form(''),
+    db: Session = Depends(get_db),
+):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    try:
+        result = await autopilot_service.rebuild_store_feed(
+            db,
+            store_id,
+            reason='manual_autopilot_button',
+            warehouse_id=warehouse_id,
+            limit_count=0,
+            q_filter='',
+        )
+        if not result.get('ok'):
+            return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(result.get('message') or result.get('error') or 'Автопилот занят'), status_code=303)
+        msg = f'Автопилот обновил XML: товаров {result["processed"]}, новых цен {result["changed"]}, пропущено {result["skipped"]}, ошибок {result["errors"]}.'
+        return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(msg), status_code=303)
+    except Exception as exc:
+        return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
 
 
 @web_router.post('/automation/rebuild-xml')
@@ -803,7 +856,15 @@ async def rebuild_xml_feed_page(
 
 
 @web_router.get('/kaspi-feed/{store_id}.xml')
-def kaspi_xml_feed(request: Request, store_id: int):
+async def kaspi_xml_feed(request: Request, store_id: int, db: Session = Depends(get_db)):
+    # Когда Kaspi открывает XML-ссылку, мы можем сначала пересобрать XML, если он устарел.
+    # Это делает схему почти полностью автоматической: один раз импортировали ACTIVE.xlsx,
+    # дальше Kaspi каждый час забирает свежий XML.
+    try:
+        await autopilot_service.rebuild_store_if_stale(db, store_id, reason='kaspi_pull_refresh')
+    except Exception as exc:
+        db.add(Alert(title='XML автопилот не смог обновить файл перед отдачей', body=str(exc)[:500], type=AlertType.API_ERROR))
+        db.commit()
     # Логируем любое открытие XML: это может быть Kaspi, браузер, проверка вручную или мониторинг.
     # Это не подтверждение применения цен в Kaspi, а факт запроса нашего XML-файла.
     xml_feed_service.log_pull(store_id, request)
