@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}История XML — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero-card reveal">
+  <p class="eyebrow">XML Audit</p>
+  <h1>История XML и запросов Kaspi</h1>
+  <p class="muted big">Здесь видно, когда бот создал XML, какие цены были в файле, и когда кто-то запросил XML-ссылку.</p>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="/automation?store_id={{ selected_store_id }}">XML автозагрузка</a>
+    <a class="btn btn-soft" href="{{ feed_url }}" target="_blank">Открыть текущий XML</a>
+  </div>
+</section>
+
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+
+<section class="premium-card reveal">
+  <form class="form inline-controls" method="get" action="/xml-history">
+    <label>Магазин
+      <select name="store_id" onchange="this.form.submit()">
+        {% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Версия XML
+      <select name="feed_id" onchange="this.form.submit()">
+        {% for v in versions %}<option value="{{ v.feed_id }}" {% if v.feed_id == selected_feed_id %}selected{% endif %}>{{ v.updated_at }} · {{ v.changed }} изменений</option>{% endfor %}
+      </select>
+    </label>
+    <button class="btn btn-soft">Показать</button>
+  </form>
+</section>
+
+<section class="grid-2">
+  <div class="premium-card reveal">
+    <div class="card-head"><div><p class="eyebrow">Generated</p><h2>Когда бот создал XML</h2></div><span class="badge">{{ versions|length }}</span></div>
+    {% if versions %}
+      <div class="table-wrap compact-table">
+        <table>
+          <thead><tr><th>Дата</th><th>Товаров</th><th>Изменено</th><th>Размер</th><th></th></tr></thead>
+          <tbody>
+          {% for v in versions %}
+            <tr>
+              <td><b>{{ v.updated_at }}</b><br><small>{{ v.feed_id }}</small></td>
+              <td>{{ v.processed }}</td>
+              <td>{{ v.changed }}</td>
+              <td>{{ (v.size_bytes / 1024)|round(1) }} KB</td>
+              <td><a class="btn btn-small" href="/xml-history?store_id={{ selected_store_id }}&feed_id={{ v.feed_id }}">Открыть</a></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-archive">XML ещё не создавался.</div>
+    {% endif %}
+  </div>
+
+  <div class="premium-card reveal">
+    <div class="card-head"><div><p class="eyebrow">Pulled</p><h2>Когда XML забирали</h2><p class="muted">Это факт запроса файла. Kaspi отдельно не сообщает нам, применил ли цены.</p></div><span class="badge">{{ pulls|length }}</span></div>
+    {% if pulls %}
+      <div class="table-wrap compact-table">
+        <table>
+          <thead><tr><th>Дата</th><th>Кто</th><th>Версия</th><th>Файл</th></tr></thead>
+          <tbody>
+          {% for p in pulls %}
+            <tr>
+              <td><b>{{ p.accessed_at }}</b><br><small>{{ p.ip }}</small></td>
+              <td>{{ 'похоже Kaspi' if p.likely_kaspi else 'браузер/проверка' }}<br><small>{{ p.user_agent[:80] }}</small></td>
+              <td>{{ p.feed_updated_at or 'нет XML' }}<br><small>{{ p.feed_id or '' }}</small></td>
+              <td>{{ p.filename or 'пустой XML' }}<br><small>{{ p.processed }} товаров · {{ p.changed }} изменений</small></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-archive">Пока XML-ссылку никто не открывал. Когда Kaspi заберёт файл, здесь появится запись.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="premium-card reveal">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Price snapshot</p>
+      <h2>Какие цены были в выбранном XML</h2>
+      {% if selected_version %}<p class="muted">Версия {{ selected_version.feed_id }} · {{ selected_version.updated_at }} · товаров {{ selected_version.processed }} · изменено {{ selected_version.changed }}</p>{% endif %}
+    </div>
+    <span class="badge on">{{ details|length }} строк</span>
+  </div>
+  {% if details %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Товар</th><th>SKU</th><th>Было</th><th>В XML</th><th>Разница</th><th>Причина</th></tr></thead>
+        <tbody>
+        {% for d in details %}
+          <tr class="{{ 'changed-row' if d.changed else '' }}">
+            <td><b>{{ d.name }}</b><br><small>{{ d.status }}</small></td>
+            <td><code>{{ d.sku }}</code></td>
+            <td>{{ d.old_price }} ₸</td>
+            <td><b>{{ d.new_price }} ₸</b></td>
+            <td>{{ d.delta }} ₸</td>
+            <td><small>{{ d.reason }}</small></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="notice info compact"><b>Важно:</b> “В XML” — это цена, которую наш сайт отдал Kaspi в файле. Подтверждение, что Kaspi принял все строки без ошибок, нужно смотреть в кабинете продавца → история загрузок.</div>
+  {% else %}
+    <div class="empty-archive">Для этой версии нет деталей или XML ещё не создан.</div>
+  {% endif %}
+</section>
+{% endblock %}

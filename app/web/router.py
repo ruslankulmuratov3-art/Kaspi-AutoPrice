@@ -671,6 +671,8 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
     selected_store_id = store_id or (stores[0].id if stores else None)
     selected_store = next((s for s in stores if s.id == selected_store_id), None) if selected_store_id else None
     feed_record = xml_feed_service.get_record(selected_store_id) if selected_store_id else None
+    feed_versions = xml_feed_service.list_versions(selected_store_id, limit=8) if selected_store_id else []
+    feed_pulls = xml_feed_service.list_pulls(selected_store_id, limit=8) if selected_store_id else []
     ready_count = 0
     if selected_store_id:
         ready_count = db.query(Product).filter(
@@ -690,6 +692,8 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
         'selected_store_id': selected_store_id,
         'selected_store': selected_store,
         'feed_record': feed_record,
+        'feed_versions': feed_versions,
+        'feed_pulls': feed_pulls,
         'ready_count': ready_count,
         'feed_url': feed_url,
         'android_url': android_url,
@@ -736,21 +740,48 @@ async def rebuild_xml_feed_page(
         return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote('Нет готовых товаров для XML. Сначала импортируй ACTIVE.xlsx и примени лимиты.'), status_code=303)
 
     price_by_sku: dict[str, int] = {}
+    details: list[dict] = []
     changed = 0
     skipped = 0
     for product in products:
+        old_price = int(round(float(product.current_price or 0)))
+        new_price = old_price
+        reason = 'Без изменения'
+        status = 'same'
         try:
             decision = await pricing_engine.preview_product(db, product)
+            reason = str(decision.reason or '')
             if decision.can_apply:
-                price = int(round(float(decision.suggested_price)))
-                price_by_sku[product.kaspi_sku] = price
-                changed += 1
+                new_price = int(round(float(decision.suggested_price)))
+                status = 'changed' if new_price != old_price else 'same'
+                price_by_sku[product.kaspi_sku] = new_price
+                if new_price != old_price:
+                    changed += 1
+                else:
+                    skipped += 1
             else:
-                price_by_sku[product.kaspi_sku] = int(round(float(product.current_price or 0)))
+                new_price = old_price
+                price_by_sku[product.kaspi_sku] = old_price
+                status = 'skipped'
                 skipped += 1
-        except Exception:
-            price_by_sku[product.kaspi_sku] = int(round(float(product.current_price or 0)))
+        except Exception as exc:
+            new_price = old_price
+            reason = f'Ошибка расчёта: {exc}'[:300]
+            status = 'error'
+            price_by_sku[product.kaspi_sku] = old_price
             skipped += 1
+        details.append({
+            'product_id': product.id,
+            'sku': str(product.kaspi_sku or ''),
+            'name': str(product.name or product.kaspi_sku or ''),
+            'old_price': old_price,
+            'new_price': new_price,
+            'delta': new_price - old_price,
+            'changed': new_price != old_price,
+            'reason': reason,
+            'status': status,
+            'url': product.url or '',
+        })
     try:
         record = xml_feed_service.save_feed(
             store=store,
@@ -762,6 +793,7 @@ async def rebuild_xml_feed_page(
             skipped=skipped,
             limit_count=limit_count,
             q_filter=q_filter,
+            details=details,
         )
     except XmlFeedError as exc:
         return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
@@ -771,11 +803,46 @@ async def rebuild_xml_feed_page(
 
 
 @web_router.get('/kaspi-feed/{store_id}.xml')
-def kaspi_xml_feed(store_id: int):
+def kaspi_xml_feed(request: Request, store_id: int):
+    # Логируем любое открытие XML: это может быть Kaspi, браузер, проверка вручную или мониторинг.
+    # Это не подтверждение применения цен в Kaspi, а факт запроса нашего XML-файла.
+    xml_feed_service.log_pull(store_id, request)
     path = xml_feed_service.file_path_for(store_id)
     if not path:
         return Response('<?xml version="1.0" encoding="utf-8"?><kaspi_catalog xmlns="kaspiShopping"><company></company><merchantid></merchantid><offers></offers></kaspi_catalog>', media_type='application/xml')
     return FileResponse(path, media_type='application/xml', filename=f'kaspi_store_{store_id}.xml')
+
+
+@web_router.get('/xml-history', response_class=HTMLResponse)
+def xml_history_page(request: Request, store_id: int | None = None, feed_id: str | None = None, db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    stores = db.query(Store).order_by(Store.name.asc()).all()
+    selected_store_id = store_id or (stores[0].id if stores else None)
+    selected_store = next((s for s in stores if s.id == selected_store_id), None) if selected_store_id else None
+    versions = xml_feed_service.list_versions(selected_store_id, limit=50) if selected_store_id else []
+    pulls = xml_feed_service.list_pulls(selected_store_id, limit=100) if selected_store_id else []
+    selected_feed_id = feed_id or (versions[0].get('feed_id') if versions else None)
+    selected_version = xml_feed_service.get_version(selected_store_id, selected_feed_id) if selected_feed_id else None
+    details = (selected_version or {}).get('details', [])
+    base_url = str(request.base_url).rstrip('/')
+    feed_url = f'{base_url}/kaspi-feed/{selected_store_id}.xml' if selected_store_id else ''
+    return templates.TemplateResponse('xml_history.html', {
+        'request': request,
+        'user': user,
+        'stores': stores,
+        'selected_store_id': selected_store_id,
+        'selected_store': selected_store,
+        'versions': versions,
+        'pulls': pulls,
+        'selected_version': selected_version,
+        'selected_feed_id': selected_feed_id,
+        'details': details,
+        'feed_url': feed_url,
+        'message': request.query_params.get('message', ''),
+        'error': request.query_params.get('error', ''),
+    })
 
 
 @web_router.get('/android', response_class=HTMLResponse)
