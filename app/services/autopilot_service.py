@@ -158,7 +158,10 @@ class AutoPilotService:
                     new_price = int(round(float(decision.suggested_price)))
                     status = 'changed' if new_price != old_price else 'same'
                 else:
-                    status = 'skipped'
+                    if str(reason).startswith('Kaspi:') or 'HTTP 405' in str(reason) or '?????????? ?? ????????' in str(reason):
+                        status = 'error'
+                    else:
+                        status = 'skipped'
             except Exception as exc:
                 reason = f'Ошибка расчёта: {exc}'[:300]
                 status = 'error'
