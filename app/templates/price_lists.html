@@ -1,79 +1,49 @@
 {% extends "base.html" %}
-{% block title %}Прайс-листы — Kaspi AutoPrice{% endblock %}
+{% block title %}Архив — Kaspi AutoPrice{% endblock %}
 {% block content %}
-<section class="hero reveal hero-premium">
-  <div class="hero-copy">
-    <p class="eyebrow">Excel Archive</p>
-    <h1>Архив готовых прайс-листов</h1>
-    <p class="lead muted">Здесь сохраняются все рассчитанные Excel-файлы: дата, магазин, размер, количество строк, сколько товаров считалось и сколько цен изменилось.</p>
+<section class="hero">
+  <div>
+    <p class="eyebrow">Архив</p>
+    <h1>Файлы</h1>
+    <p class="lead">XML и Excel-файлы, которые были созданы системой.</p>
   </div>
-  <div class="hero-actions">
-    <a class="btn btn-primary" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Создать новый Excel</a>
-  </div>
+  <a class="btn btn-primary" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">К товарам</a>
 </section>
 
-{% if message %}<div class="notice success reveal">{{ message }}</div>{% endif %}
-{% if error %}<div class="notice danger reveal">{{ error }}</div>{% endif %}
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
 
-<section class="premium-card reveal">
-  <div class="card-head">
-    <div>
-      <p class="eyebrow">Filter</p>
-      <h2>Фильтр по магазину</h2>
-      <p class="muted">Можно смотреть все файлы или только файлы выбранного магазина.</p>
-    </div>
-  </div>
-  <form class="searchbar smart-search" method="get">
+<section class="premium-card">
+  <form class="searchbar" method="get">
     <select name="store_id">
       <option value="">Все магазины</option>
-      {% for s in stores %}
-      <option value="{{ s.id }}" {% if selected_store_id == s.id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>
-      {% endfor %}
+      {% for s in stores %}<option value="{{ s.id }}" {% if selected_store_id == s.id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
     </select>
     <button class="btn btn-soft">Показать</button>
   </form>
 </section>
 
-<section class="premium-card reveal">
-  <div class="card-head">
-    <div>
-      <p class="eyebrow">Files</p>
-      <h2>Сохранённые Excel</h2>
-      <p class="muted">Это локальный архив внутри проекта. Если удалить папку storage, архив тоже удалится.</p>
-    </div>
-    <span class="badge on">{{ records|length }} файлов</span>
-  </div>
-  <div class="archive-grid archive-grid-large">
+<section class="premium-card">
+  <div class="card-head"><div><p class="eyebrow">Список</p><h2>Сохранённые файлы</h2></div><span class="badge">{{ records|length }}</span></div>
+  <div class="archive-grid">
     {% for item in records %}
-    <article class="archive-item archive-item-large">
-      <div class="archive-main">
-        <span class="file-icon">XLSX</span>
-        <div>
-          <h3>{{ item.filename }}</h3>
-          <p>{{ item.store_name }} · {{ item.created_at }}</p>
-        </div>
+    <article class="archive-item">
+      <div>
+        <b>{{ item.filename }}</b>
+        <small>{{ item.store_name }} · {{ item.created_at }} · {{ item.size_label }}</small>
       </div>
-      <div class="archive-stats archive-stats-large">
-        <span>Размер <b>{{ item.size_label }}</b></span>
-        <span>Строк в полном Excel <b>{{ item.total_rows }}</b></span>
-        <span>Считалось товаров <b>{{ item.processed_products }}</b></span>
-        <span>Цен изменено <b>{{ item.changed }}</b></span>
-        <span>Пропущено/без изменений <b>{{ item.skipped }}</b></span>
-        <span>Режим <b>{{ item.scope }}</b></span>
+      <div class="archive-stats">
+        <span>строк <b>{{ item.total_rows }}</b></span>
+        <span>товаров <b>{{ item.processed_products }}</b></span>
+        <span>цен <b>{{ item.changed }}</b></span>
       </div>
-      {% if item.source_filename %}<p class="muted small-note">Исходный файл: {{ item.source_filename }}</p>{% endif %}
       <div class="archive-actions">
-        <a class="btn btn-primary" href="/price-lists/download/{{ item.id }}">Скачать Excel</a>
-        <a class="btn btn-soft" href="/products{% if item.store_id %}?store_id={{ item.store_id }}{% endif %}">К товарам</a>
+        <a class="btn btn-small btn-primary" href="/price-lists/download/{{ item.id }}">Скачать</a>
+        <a class="btn btn-small" href="/products{% if item.store_id %}?store_id={{ item.store_id }}{% endif %}">Товары</a>
       </div>
     </article>
     {% endfor %}
-    {% if not records %}
-    <div class="empty-archive big">
-      <b>Пока нет сохранённых прайс-листов</b>
-      <p>Зайди в “Товары и автопрайс”, загрузи полный ACTIVE.xlsx и нажми “Рассчитать и скачать”. После этого файл появится здесь.</p>
-    </div>
-    {% endif %}
+    {% if not records %}<div class="empty-archive">Файлов пока нет.</div>{% endif %}
   </div>
 </section>
 {% endblock %}

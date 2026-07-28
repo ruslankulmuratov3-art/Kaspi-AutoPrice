@@ -1,34 +1,30 @@
 {% extends "base.html" %}
-{% block title %}Выбор магазина — Kaspi AutoPrice{% endblock %}
+{% block title %}Магазины — Kaspi AutoPrice{% endblock %}
 {% block content %}
 {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
 {% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
 
-<section class="hero hero-store reveal">
-  <div class="hero-copy">
-    <p class="eyebrow">Store selector</p>
-    <h1>Выберите магазин для управления ценами</h1>
-    <p class="lead muted">Все товары, лимиты, Excel-импорт и автопрайс разделены по магазинам. Выберите нужный магазин и переходите в его панель.</p>
+<section class="hero">
+  <div>
+    <p class="eyebrow">Магазины</p>
+    <h1>Выберите магазин</h1>
+    <p class="lead">Товары, лимиты, XML и история сохраняются в PostgreSQL.</p>
   </div>
-  <div class="hero-orb">
-    <span>Kaspi</span>
-    <b>{{ stores|length }}</b>
-    <small>магазинов</small>
-  </div>
+  <a class="btn btn-primary" href="#new-store">Добавить магазин</a>
 </section>
 
 <section class="store-layout">
   <div class="store-grid">
     {% for row in store_rows %}
     {% set store = row.store %}
-    <article class="store-card premium-card reveal">
+    <article class="store-card premium-card">
       <div class="store-card-top">
         <div class="store-logo">{{ store.name[:1]|upper }}</div>
         <span class="badge {{ 'on' if store.is_active else 'status-pending' }}">{{ 'Активен' if store.is_active else 'Выключен' }}</span>
       </div>
       <div class="store-main">
         <h2>{{ store.name }}</h2>
-        <p>{{ store.city }} · ID {{ store.merchant_id }}</p>
+        <p>{{ store.city }} · {{ store.merchant_id }}</p>
       </div>
       <div class="store-stats">
         <div><strong>{{ row.total }}</strong><span>товаров</span></div>
@@ -36,51 +32,39 @@
         <div><strong>{{ row.pending }}</strong><span>настроить</span></div>
       </div>
       <div class="store-actions">
-        <a class="btn btn-primary btn-wide transition-link" href="/products?store_id={{ store.id }}">Перейти</a>
-        <button class="btn btn-soft btn-wide" type="button" data-open-panel="store-edit-{{ store.id }}">Изменить</button>
+        <a class="btn btn-primary btn-wide" href="/dashboard?store_id={{ store.id }}">Выбрать</a>
+        <button class="btn btn-soft btn-wide" type="button" data-open-panel="store-edit-{{ store.id }}">Редактировать</button>
       </div>
     </article>
 
-    <section class="drawer-panel glass-panel" id="store-edit-{{ store.id }}" aria-hidden="true">
+    <section class="drawer-panel" id="store-edit-{{ store.id }}" aria-hidden="true">
       <div class="drawer-head">
-        <div>
-          <p class="eyebrow">Редактирование</p>
-          <h2>{{ store.name }}</h2>
-        </div>
-        <button class="btn btn-icon" type="button" data-close-panel>×</button>
+        <div><p class="eyebrow">Редактировать</p><h2>{{ store.name }}</h2></div>
+        <button class="btn btn-small" type="button" data-close-panel>Закрыть</button>
       </div>
       <form class="form" method="post" action="/stores/{{ store.id }}/update">
-        <label>Название магазина<input name="name" value="{{ store.name }}" required></label>
-        <div class="form-grid">
-          <label>Merchant ID<input name="merchant_id" value="{{ store.merchant_id }}" required></label>
-          <label>Город<input name="city" value="{{ store.city or 'Алматы' }}"></label>
-        </div>
-        <label>API Token<textarea name="api_token" placeholder="Оставь пустым, если не хочешь менять токен"></textarea></label>
-        <label class="check-row"><input type="checkbox" name="is_active" value="on" {% if store.is_active %}checked{% endif %}> Магазин активен</label>
-        <button class="btn btn-primary btn-wide">Сохранить изменения</button>
+        <label>Название<input name="name" value="{{ store.name }}" required></label>
+        <label>Merchant ID<input name="merchant_id" value="{{ store.merchant_id }}" required></label>
+        <label>Город<input name="city" value="{{ store.city or 'Алматы' }}"></label>
+        <label>API Token<textarea name="api_token" placeholder="Оставьте пустым, если не меняете"></textarea></label>
+        <label class="check-row"><input type="checkbox" name="is_active" value="on" {% if store.is_active %}checked{% endif %}> Активен</label>
+        <button class="btn btn-primary btn-wide">Сохранить</button>
       </form>
     </section>
     {% endfor %}
 
-    {% if not store_rows %}
-    <div class="empty-state premium-card reveal">
-      <div class="empty-icon">＋</div>
-      <h2>Магазинов пока нет</h2>
-      <p class="muted">Добавьте первый магазин, затем загрузите ACTIVE.xlsx и настройте автопрайс.</p>
-    </div>
-    {% endif %}
+    {% if not store_rows %}<div class="empty-state premium-card"><h2>Магазинов нет</h2><p>Добавьте первый магазин.</p></div>{% endif %}
   </div>
 
-  <aside class="premium-card store-create reveal">
+  <aside class="premium-card" id="new-store">
     <p class="eyebrow">Новый магазин</p>
-    <h2>Добавить магазин</h2>
-    <p class="muted">Можно вести несколько магазинов отдельно: свои товары, лимиты и файлы.</p>
+    <h2>Добавить</h2>
     <form class="form" method="post" action="/stores">
       <label>Название<input name="name" required placeholder="EXCLUSIVE_KZ"></label>
       <label>Merchant ID<input name="merchant_id" required placeholder="30140513"></label>
       <label>Город<input name="city" value="Алматы"></label>
       <label>API Token<textarea name="api_token" placeholder="Можно оставить пустым"></textarea></label>
-      <button class="btn btn-primary btn-wide">Создать магазин</button>
+      <button class="btn btn-primary btn-wide">Создать</button>
     </form>
   </aside>
 </section>

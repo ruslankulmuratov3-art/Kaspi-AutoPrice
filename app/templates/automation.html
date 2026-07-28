@@ -1,14 +1,13 @@
 {% extends "base.html" %}
-{% block title %}XML автопилот — Kaspi AutoPrice{% endblock %}
+{% block title %}Автопилот — Kaspi AutoPrice{% endblock %}
 {% block content %}
-<section class="hero-card reveal">
-  <p class="eyebrow">XML Autopilot</p>
-  <h1>Автопилот цен через XML</h1>
-  <p class="muted big">Один раз импортируешь ACTIVE.xlsx, применяешь лимиты, дальше сайт сам пересобирает XML. Kaspi забирает эту ссылку примерно раз в час, если файл изменился.</p>
+<section class="hero-card">
+  <p class="eyebrow">Автопилот</p>
+  <h1>XML обновляется автоматически</h1>
+  <p class="big">Сайт пересчитывает цены и отдаёт XML. Kaspi забирает файл по ссылке.</p>
   <div class="hero-actions">
     <a class="btn btn-primary" href="{{ feed_url }}" target="_blank">Открыть XML</a>
-    <a class="btn btn-soft" href="/xml-history?store_id={{ selected_store_id }}">История XML</a>
-    <a class="btn btn-soft" href="/android">Установить на Android</a>
+    <a class="btn btn-soft" href="/xml-history?store_id={{ selected_store_id }}">История</a>
   </div>
 </section>
 
@@ -16,133 +15,97 @@
 {% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
 
 <section class="grid-2">
-  <form class="premium-card form reveal" method="get" action="/automation">
-    <div class="card-head">
-      <div><p class="eyebrow">Store</p><h2>Выбор магазина</h2><p class="muted">Для каждого магазина будет своя XML-ссылка и своя история.</p></div>
-      <span class="badge">{{ ready_count }} готово</span>
-    </div>
-    <label>Магазин
+  <form class="premium-card form" method="get" action="/automation">
+    <div class="card-head"><div><p class="eyebrow">Магазин</p><h2>{{ selected_store.name if selected_store else 'Не выбран' }}</h2></div><span class="badge">{{ ready_count }} готово</span></div>
+    <label>Выбрать
       <select name="store_id" onchange="this.form.submit()">
         {% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
       </select>
     </label>
   </form>
 
-  <div class="premium-card reveal">
-    <div class="card-head"><div><p class="eyebrow">Feed URL</p><h2>Ссылка для Kaspi</h2><p class="muted">Вставь её в кабинете продавца: Товары → Загрузить прайс-лист → Автоматическая загрузка.</p></div><span class="badge on">XML</span></div>
-    <div class="copy-box"><code>{{ feed_url }}</code></div>
-    <p class="muted">На Render ссылка должна быть вида https://kaspi-autoprice.onrender.com/kaspi-feed/1.xml. Локальный 127.0.0.1 Kaspi не видит.</p>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">XML ссылка</p><h2>Для Kaspi</h2></div><span class="badge on">активна</span></div>
+    <div class="copy-box"><code id="feed-url">{{ feed_url }}</code><button class="btn btn-small" type="button" data-copy="#feed-url">Копировать</button></div>
+    <p class="muted small-note">Вставьте эту ссылку в автозагрузку прайс-листа Kaspi.</p>
   </div>
 </section>
 
-<section class="premium-card xl-card reveal autopilot-panel">
-  <div class="card-head">
-    <div>
-      <p class="eyebrow">Auto mode</p>
-      <h2>Автопилот включён</h2>
-      <p class="muted">Сайт автоматически пересобирает XML каждые 60 минут, пока Render активен. Если Kaspi откроет XML, а файл старше 55 минут, сайт попробует пересобрать XML прямо перед отдачей.</p>
-    </div>
-    <span class="badge on">сам обновляет</span>
-  </div>
+<section class="metrics small-metrics">
+  <div class="metric premium-card"><span>Готовые товары</span><strong>{{ ready_count }}</strong><small>пойдут в XML</small></div>
+  <div class="metric premium-card"><span>Изменено в XML</span><strong>{{ feed_record.changed if feed_record else 0 }}</strong><small>последняя версия</small></div>
+  <div class="metric premium-card"><span>Последний запрос</span><strong>{{ feed_pulls[0].accessed_at if feed_pulls else '—' }}</strong><small>Kaspi/браузер</small></div>
+</section>
 
-  <div class="metrics small-metrics">
-    <div class="metric premium-card"><span>Готовых товаров</span><strong>{{ ready_count }}</strong><small>пойдут в XML</small></div>
-    <div class="metric premium-card"><span>Последний XML</span><strong>{{ feed_record.changed if feed_record else 0 }}</strong><small>новых цен</small></div>
-    <div class="metric premium-card"><span>Последний pull</span><strong>{{ feed_pulls[0].accessed_at if feed_pulls else '—' }}</strong><small>когда открывали XML</small></div>
+<section class="premium-card">
+  <div class="card-head">
+    <div><p class="eyebrow">Расчёт</p><h2>Статус автопилота</h2></div>
+    <span class="badge {{ 'on' if autopilot_status and autopilot_status.running else '' }}">{{ 'Работает' if autopilot_status and autopilot_status.running else 'Ожидает' }}</span>
   </div>
 
   {% if autopilot_status %}
-  <div class="progress-panel visible">
-    <div class="progress-head"><b>{{ 'Автопилот считает' if autopilot_status.running else 'Последний автопилот' }}</b><span>{{ autopilot_status.percent or 0 }}%</span></div>
+  <div class="progress-panel">
+    <div class="progress-head"><b>{{ autopilot_status.processed_now or autopilot_status.processed or 0 }} / {{ autopilot_status.total or autopilot_status.processed or 0 }}</b><span>{{ autopilot_status.percent or 0 }}%</span></div>
     <div class="progress-track"><i style="width: {{ autopilot_status.percent or 0 }}%"></i></div>
-    <p>Обработано {{ autopilot_status.processed_now or autopilot_status.processed or 0 }} / {{ autopilot_status.total or autopilot_status.processed or 0 }} · изменено {{ autopilot_status.changed or 0 }} · ошибок {{ autopilot_status.errors or 0 }}</p>
-  </div>
-  {% endif %}
-
-  <form method="post" action="/automation/run-now" class="form compact-form">
-    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
-    <label>Код склада / точки Kaspi
-      <input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}" placeholder="например PP1">
-    </label>
-    <button class="btn btn-primary">Запустить автопилот сейчас</button>
-  </form>
-
-  <form method="post" action="/automation/stop" class="form compact-form">
-    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
-    <button class="btn btn-danger" data-no-loading="1">Остановить текущий расчёт</button>
-  </form>
-
-  <div class="notice info compact"><b>Важно:</b> наш сайт показывает, когда XML создан и когда его открыли. Kaspi не отправляет нам отдельное подтверждение “цены применены”, поэтому финальный статус смотри в кабинете Kaspi → история загрузок.</div>
-</section>
-
-<section class="premium-card xl-card reveal">
-  <div class="card-head">
-    <div><p class="eyebrow">Manual rebuild</p><h2>Ручная пересборка XML</h2><p class="muted">Обычно не нужна. Оставил как запасной вариант для теста, поиска или пересчёта первых N товаров.</p></div>
-    <span class="badge">резерв</span>
-  </div>
-  <form method="post" action="/automation/rebuild-xml" class="form">
-    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
-    <div class="form-grid">
-      <label>Код склада / точки Kaspi
-        <input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}" placeholder="например PP1">
-      </label>
-      <label>Сколько товаров пересчитать
-        <input name="limit_count" type="number" value="100" min="0" step="1" placeholder="0 = все готовые">
-      </label>
-      <label>Поиск по названию/SKU
-        <input name="q_filter" placeholder="пусто = все">
-      </label>
-    </div>
-    <button class="btn btn-soft">Пересобрать вручную</button>
-  </form>
-</section>
-
-<section class="premium-card reveal">
-  <div class="card-head"><div><p class="eyebrow">Status</p><h2>Последний XML</h2></div></div>
-  {% if feed_record %}
-  <div class="archive-item">
-    <div><b>{{ feed_record.filename }}</b><small>Обновлён: {{ feed_record.updated_at }} · размер: {{ (feed_record.size_bytes / 1024)|round(1) }} KB · версия: {{ feed_record.feed_id }}</small></div>
-    <div class="archive-stats"><span>Товаров: <b>{{ feed_record.processed }}</b></span><span>Изменено: <b>{{ feed_record.changed }}</b></span><span>Пропущено: <b>{{ feed_record.skipped }}</b></span></div>
-    <a class="btn btn-small" href="{{ feed_url }}" target="_blank">Скачать XML</a>
+    <p class="muted">Изменено {{ autopilot_status.changed or 0 }} · без изменений {{ autopilot_status.skipped or 0 }} · ошибок {{ autopilot_status.errors or 0 }}</p>
   </div>
   {% else %}
-  <div class="empty-archive">XML ещё не создан. Нажми “Запустить автопилот сейчас”.</div>
+  <div class="empty-archive">Запустите автопилот после импорта и лимитов.</div>
   {% endif %}
+
+  <div class="grid-2">
+    <form method="post" action="/automation/run-now" class="form">
+      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+      <label>Склад Kaspi<input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}" placeholder="PP1"></label>
+      <button class="btn btn-primary">Запустить</button>
+    </form>
+    <form method="post" action="/automation/stop" class="form">
+      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+      <label>Остановка<span class="muted">Остановит текущий расчёт.</span></label>
+      <button class="btn btn-danger" data-no-loading="1">Остановить</button>
+    </form>
+  </div>
 </section>
 
 <section class="grid-2">
-  <div class="premium-card reveal">
-    <div class="card-head"><div><p class="eyebrow">Pull log</p><h2>Когда XML открывали</h2><p class="muted">Тут появится запись, когда Kaspi или браузер запросит XML-ссылку.</p></div><a class="btn btn-small" href="/xml-history?store_id={{ selected_store_id }}">Подробнее</a></div>
-    {% if feed_pulls %}
-      <div class="mini-timeline">
-        {% for pull in feed_pulls %}
-        <div class="timeline-row">
-          <b>{{ pull.accessed_at }}</b>
-          <span>{{ 'похоже Kaspi' if pull.likely_kaspi else 'открытие XML' }}</span>
-          <small>{{ pull.ip }} · {{ pull.user_agent[:70] }}</small>
-        </div>
-        {% endfor %}
-      </div>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">XML</p><h2>Последняя версия</h2></div></div>
+    {% if feed_record %}
+    <div class="archive-item">
+      <div><b>{{ feed_record.filename }}</b><small>{{ feed_record.updated_at }} · {{ (feed_record.size_bytes / 1024)|round(1) }} KB</small></div>
+      <div class="archive-stats"><span>товаров <b>{{ feed_record.processed }}</b></span><span>изменено <b>{{ feed_record.changed }}</b></span></div>
+      <a class="btn btn-small" href="{{ feed_url }}" target="_blank">Открыть</a>
+    </div>
     {% else %}
-      <div class="empty-archive">Пока XML никто не открывал.</div>
+    <div class="empty-archive">XML ещё не создан.</div>
     {% endif %}
   </div>
 
-  <div class="premium-card reveal">
-    <div class="card-head"><div><p class="eyebrow">Versions</p><h2>Версии XML</h2><p class="muted">Каждое пересоздание XML сохраняется отдельно.</p></div><span class="badge">{{ feed_versions|length }}</span></div>
-    {% if feed_versions %}
-      <div class="mini-timeline">
-        {% for v in feed_versions %}
-        <a class="timeline-row link-row" href="/xml-history?store_id={{ selected_store_id }}&feed_id={{ v.feed_id }}">
-          <b>{{ v.updated_at }}</b>
-          <span>товаров {{ v.processed }} · изменено {{ v.changed }} · пропущено {{ v.skipped }}</span>
-          <small>{{ v.filename }} · {{ (v.size_bytes / 1024)|round(1) }} KB</small>
-        </a>
-        {% endfor %}
-      </div>
-    {% else %}
-      <div class="empty-archive">Версий ещё нет.</div>
-    {% endif %}
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Запросы</p><h2>Кто открывал XML</h2></div><a class="btn btn-small" href="/xml-history?store_id={{ selected_store_id }}">Все</a></div>
+    <div class="mini-timeline">
+      {% for pull in feed_pulls %}
+      <div class="timeline-row"><b>{{ pull.accessed_at }}</b><span>{{ 'похоже Kaspi' if pull.likely_kaspi else 'открытие' }}</span><small>{{ pull.ip }} · {{ pull.user_agent[:70] }}</small></div>
+      {% endfor %}
+      {% if not feed_pulls %}<div class="empty-archive">Запросов пока нет.</div>{% endif %}
+    </div>
   </div>
 </section>
+
+<section class="accordion muted-section">
+  <button class="accordion-trigger premium-card" type="button" data-accordion="manual-xml"><span>Ручная пересборка XML</span><b>＋</b></button>
+  <div class="accordion-content" id="manual-xml">
+    <form method="post" action="/automation/rebuild-xml" class="premium-card form">
+      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+      <div class="form-grid">
+        <label>Склад<input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}"></label>
+        <label>Количество<input name="limit_count" type="number" value="100" min="0" step="1"></label>
+        <label>Поиск<input name="q_filter" placeholder="название или SKU"></label>
+      </div>
+      <button class="btn btn-soft">Пересобрать</button>
+    </form>
+  </div>
+</section>
+
+<div class="notice info compact">Мы видим, когда XML был запрошен. Подтверждение обработки смотрите в кабинете Kaspi.</div>
 {% endblock %}

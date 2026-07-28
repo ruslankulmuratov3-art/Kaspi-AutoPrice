@@ -341,7 +341,7 @@ async def import_kaspi_excel_page(
         return RedirectResponse(f'/products?store_id={store_id}&error=' + quote('Нужно выбрать Excel .xlsx из Kaspi, например ACTIVE.xlsx'), status_code=303)
     try:
         result = price_list_import_service.import_xlsx(db, store_id=store_id, data=await file.read())
-        msg = f'ACTIVE.xlsx импортирован: новых {result.created}, обновлено {result.updated}, пропущено {result.skipped}, не найдено в последнем файле {result.missing}. Неподтверждённых товаров: {result.pending}. Теперь укажи мин/макс/себестоимость один раз — дальше XML будет обновляться сам.'
+        msg = f'ACTIVE.xlsx импортирован: новых {result.created}, обновлено {result.updated}, пропущено {result.skipped}, не найдено в последнем файле {result.missing}. Неподтверждённых товаров: {result.pending}. Дальше настрой лимиты и запусти автопилот.'
         db.add(Alert(title='Товары импортированы из Excel', body=msg, type=AlertType.SYSTEM))
         db.commit()
         return RedirectResponse(f'/products?store_id={store_id}&message=' + quote(msg), status_code=303)
@@ -378,7 +378,14 @@ def bulk_setup_products_page(
         products_query = products_query.filter(Product.store_id == store_id)
     if q_filter.strip():
         like = f'%{q_filter.strip()}%'
-        products_query = products_query.filter((Product.name.ilike(like)) | (Product.kaspi_sku.ilike(like)))
+        products_query = products_query.filter(or_(
+            Product.name.ilike(like),
+            Product.kaspi_sku.ilike(like),
+            Product.product_id.ilike(like),
+            Product.brand.ilike(like),
+            Product.model.ilike(like),
+            Product.url.ilike(like),
+        ))
     try:
         limit_count = int(limit_count or 0)
     except (TypeError, ValueError):
@@ -410,7 +417,7 @@ def bulk_setup_products_page(
     scope_text = 'выбранных товаров' if selected_ids else ('товаров по лимиту' if limit_count > 0 else 'неподтверждённых товаров')
     db.add(Alert(title='Массовые лимиты настроены', body=f'Настроено {scope_text}: {changed}. Проверь пару товаров глазами перед массовым автопрайсом.', type=AlertType.SYSTEM))
     db.commit()
-    return RedirectResponse(f'/products?store_id={store_id}&message=' + quote(f'Настроено {scope_text}: {changed}. Теперь можно считать Excel по выбранным товарам или по количеству.'), status_code=303)
+    return RedirectResponse(f'/products?store_id={store_id}&message=' + quote(f'Настроено {scope_text}: {changed}. Теперь можно запускать автопилот.'), status_code=303)
 
 
 @web_router.get('/products/{product_id}', response_class=HTMLResponse)
@@ -599,7 +606,14 @@ async def run_all_page(
         products_query = products_query.filter(Product.store_id == store_id)
     if q_filter.strip():
         like = f'%{q_filter.strip()}%'
-        products_query = products_query.filter((Product.name.ilike(like)) | (Product.kaspi_sku.ilike(like)))
+        products_query = products_query.filter(or_(
+            Product.name.ilike(like),
+            Product.kaspi_sku.ilike(like),
+            Product.product_id.ilike(like),
+            Product.brand.ilike(like),
+            Product.model.ilike(like),
+            Product.url.ilike(like),
+        ))
     try:
         limit_count = int(limit_count or 0)
     except (TypeError, ValueError):
@@ -764,7 +778,7 @@ def autopilot_stop_page(request: Request, store_id: int = Form(...), db: Session
     if not user:
         return login_redirect()
     autopilot_service.request_stop(store_id)
-    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote('Автопилот остановится после текущих товаров. XML и товары не удаляются.'), status_code=303)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote('Автопилот остановится после текущего товара.'), status_code=303)
 
 @web_router.post('/automation/rebuild-xml')
 async def rebuild_xml_feed_page(
@@ -790,7 +804,14 @@ async def rebuild_xml_feed_page(
     )
     if q_filter.strip():
         like = f'%{q_filter.strip()}%'
-        products_query = products_query.filter((Product.name.ilike(like)) | (Product.kaspi_sku.ilike(like)))
+        products_query = products_query.filter(or_(
+            Product.name.ilike(like),
+            Product.kaspi_sku.ilike(like),
+            Product.product_id.ilike(like),
+            Product.brand.ilike(like),
+            Product.model.ilike(like),
+            Product.url.ilike(like),
+        ))
     try:
         limit_count = int(limit_count or 0)
     except (TypeError, ValueError):
@@ -863,7 +884,7 @@ async def rebuild_xml_feed_page(
         return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
     db.add(Alert(title='XML-прайс обновлён', body=f'XML для магазина {store.name}: товаров {len(products)}, новых цен {changed}, без изменений/ошибок {skipped}. Ссылка для Kaspi: /kaspi-feed/{store_id}.xml', type=AlertType.SYSTEM))
     db.commit()
-    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(f'XML готов: {record["filename"]}. Товаров: {len(products)}, новых цен: {changed}. Теперь эту ссылку можно вставить в Kaspi для автозагрузки.'), status_code=303)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(f'XML готов: {record["filename"]}. Товаров: {len(products)}, новых цен: {changed}. Ссылка готова для Kaspi.'), status_code=303)
 
 
 @web_router.get('/kaspi-feed/{store_id}.xml')

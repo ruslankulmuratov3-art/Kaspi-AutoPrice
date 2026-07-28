@@ -2,81 +2,75 @@
   const qs = (s, root=document) => root.querySelector(s);
   const qsa = (s, root=document) => [...root.querySelectorAll(s)];
 
-  qsa('.reveal').forEach((el, i) => {
-    el.style.animationDelay = `${Math.min(i * 45, 320)}ms`;
+  const menuBtn = qs('.mobile-menu');
+  if(menuBtn){
+    menuBtn.addEventListener('click', () => document.body.classList.toggle('menu-open'));
+    qsa('.nav-link').forEach(a => a.addEventListener('click', () => document.body.classList.remove('menu-open')));
+  }
+
+  const path = window.location.pathname;
+  qsa('.nav-link').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if(href !== '/' && path.startsWith(href)) a.classList.add('active');
   });
 
   qsa('form').forEach(form => {
     form.addEventListener('submit', () => {
       const btn = form.querySelector('button[type="submit"], button:not([type])');
       if(!btn || btn.dataset.noLoading) return;
-      const oldText = btn.innerHTML;
-      btn.dataset.oldText = oldText;
-      btn.innerHTML = '<span class="spinner"></span> Подготавливаю...';
+      const old = btn.innerHTML;
+      btn.dataset.oldText = old;
+      btn.innerHTML = '<span class="spinner"></span> Работаю…';
       btn.disabled = true;
       if(form.hasAttribute('data-download-form')){
-        setTimeout(() => {
-          btn.innerHTML = oldText;
-          btn.disabled = false;
-        }, 180000);
-      }
-    });
-  });
-
-  qsa('input[type="file"]').forEach(input => {
-    input.addEventListener('change', () => {
-      const label = input.closest('label');
-      if(label && input.files && input.files[0]){
-        label.dataset.fileName = input.files[0].name;
+        setTimeout(() => { btn.innerHTML = old; btn.disabled = false; }, 180000);
+      } else {
+        setTimeout(() => { btn.innerHTML = old; btn.disabled = false; }, 15000);
       }
     });
   });
 
   qsa('[data-accordion]').forEach(trigger => {
-    trigger.addEventListener('click', () => {
-      const wrap = trigger.closest('.accordion');
-      if(wrap) wrap.classList.toggle('open');
-    });
+    trigger.addEventListener('click', () => trigger.closest('.accordion')?.classList.toggle('open'));
   });
 
   qsa('[data-open-panel]').forEach(btn => {
     btn.addEventListener('click', () => {
       const panel = qs('#' + btn.dataset.openPanel);
-      if(panel){
-        qsa('.drawer-panel.open').forEach(p => p.classList.remove('open'));
-        panel.classList.add('open');
-        panel.setAttribute('aria-hidden', 'false');
-      }
+      if(!panel) return;
+      qsa('.drawer-panel.open').forEach(p => p.classList.remove('open'));
+      panel.classList.add('open');
+      panel.setAttribute('aria-hidden','false');
     });
   });
 
   qsa('[data-close-panel]').forEach(btn => {
     btn.addEventListener('click', () => {
       const panel = btn.closest('.drawer-panel');
-      if(panel){
-        panel.classList.remove('open');
-        panel.setAttribute('aria-hidden', 'true');
-      }
+      panel?.classList.remove('open');
+      panel?.setAttribute('aria-hidden','true');
     });
   });
 
-  const mobileMenu = qs('.mobile-menu');
-  const sidebar = qs('.sidebar');
-  if(mobileMenu && sidebar){
-    mobileMenu.addEventListener('click', () => sidebar.classList.toggle('open'));
-    qsa('.nav-link').forEach(link => link.addEventListener('click', () => sidebar.classList.remove('open')));
-  }
-
-  qsa('.transition-link').forEach(link => {
-    link.addEventListener('click', () => {
-      document.body.classList.add('page-fade-out');
+  qsa('[data-copy]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const target = qs(btn.dataset.copy);
+      const text = target ? target.textContent.trim() : '';
+      try{
+        await navigator.clipboard.writeText(text);
+        const old = btn.textContent;
+        btn.textContent = 'Скопировано';
+        setTimeout(() => btn.textContent = old, 1400);
+      }catch(e){
+        alert('Скопируй ссылку вручную.');
+      }
     });
   });
 
   const selectedIds = () => qsa('.product-check:checked').map(input => input.value).filter(Boolean);
   const updateSelectedCount = () => {
     const count = selectedIds().length;
-    qsa('[data-selected-count]').forEach(el => { el.textContent = String(count); });
+    qsa('[data-selected-count]').forEach(el => el.textContent = String(count));
     const all = qs('[data-select-all]');
     const checks = qsa('.product-check');
     if(all && checks.length){
@@ -86,22 +80,14 @@
   };
 
   qsa('.product-check').forEach(input => input.addEventListener('change', updateSelectedCount));
-
-  const selectAll = qs('[data-select-all]');
-  if(selectAll){
-    selectAll.addEventListener('change', () => {
-      qsa('.product-check').forEach(input => { input.checked = selectAll.checked; });
-      updateSelectedCount();
-    });
-  }
-
-  const clearSelection = qs('[data-clear-selection]');
-  if(clearSelection){
-    clearSelection.addEventListener('click', () => {
-      qsa('.product-check').forEach(input => { input.checked = false; });
-      updateSelectedCount();
-    });
-  }
+  qs('[data-select-all]')?.addEventListener('change', e => {
+    qsa('.product-check').forEach(input => input.checked = e.target.checked);
+    updateSelectedCount();
+  });
+  qs('[data-clear-selection]')?.addEventListener('click', () => {
+    qsa('.product-check').forEach(input => input.checked = false);
+    updateSelectedCount();
+  });
 
   qsa('.selection-aware-form').forEach(form => {
     form.addEventListener('submit', () => {
@@ -124,51 +110,21 @@
       const bar = qs('[data-progress-bar]', panel);
       const percentEl = qs('[data-progress-percent]', panel);
       const textEl = qs('[data-progress-text]', panel);
-      const selected = selectedIds().length;
-      const limitInput = qs('input[name="limit_count"]', form);
-      const limit = limitInput ? parseInt(limitInput.value || '0', 10) : 0;
-      const planned = selected || limit || 0;
       let p = 0;
       panel.hidden = false;
-      if(textEl){
-        textEl.textContent = planned > 0
-          ? `Стартовал расчёт: ${planned} товар(ов). Не закрывай страницу, файл скачается автоматически.`
-          : 'Стартовал расчёт всех готовых товаров. Это может занять долго, не закрывай страницу.';
-      }
-      if(window.kaspiProgressTimer) clearInterval(window.kaspiProgressTimer);
-      const maxBeforeDownload = 96;
-      const tickMs = planned > 500 ? 1800 : planned > 100 ? 1200 : 700;
+      if(textEl) textEl.textContent = 'Расчёт запущен. Файл скачается автоматически.';
+      clearInterval(window.kaspiProgressTimer);
       window.kaspiProgressTimer = setInterval(() => {
-        const slowDown = p > 82 ? 0.35 : p > 60 ? 0.65 : 1;
-        p = Math.min(maxBeforeDownload, p + Math.max(1, Math.round((Math.random() * 4 + 1) * slowDown)));
+        p = Math.min(96, p + (p > 80 ? 1 : 4));
         if(bar) bar.style.width = p + '%';
         if(percentEl) percentEl.textContent = p + '%';
-        if(textEl && p > 90) textEl.textContent = 'Почти готово. Если товаров много, последние проценты могут идти дольше.';
-      }, tickMs);
+      }, 900);
     });
   });
 
   updateSelectedCount();
-
 })();
 
-if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/static/service-worker.js').catch(() => {})); }
-
-// Stable autopilot mobile menu + safe loading states
-(function(){
-  const btn = document.querySelector('.mobile-menu');
-  if(btn){
-    btn.addEventListener('click', () => document.body.classList.toggle('menu-open'));
-  }
-  document.querySelectorAll('form').forEach(form => {
-    form.addEventListener('submit', () => {
-      const submit = form.querySelector('button[type="submit"], button:not([type])');
-      if(submit && !submit.dataset.noLoading){
-        submit.dataset.oldText = submit.textContent;
-        submit.textContent = 'Работаю…';
-        submit.disabled = true;
-        setTimeout(()=>{ submit.disabled = false; submit.textContent = submit.dataset.oldText || submit.textContent; }, 15000);
-      }
-    });
-  });
-})();
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/static/service-worker.js').catch(() => {}));
+}

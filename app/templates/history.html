@@ -2,25 +2,25 @@
 {% block title %}История — Kaspi AutoPrice{% endblock %}
 {% block content %}
 {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
-<section class="hero reveal">
-  <div class="hero-copy">
-    <p class="eyebrow">Price history</p>
-    <h1>Подтверждённая история цен</h1>
-    <p class="lead muted">Здесь отображаются только подтверждённые изменения. Подготовка Excel-файла не считается изменением цены.</p>
+<section class="hero">
+  <div>
+    <p class="eyebrow">История</p>
+    <h1>Изменения цен</h1>
+    <p class="lead">Подтверждённые записи. XML-детали смотрите в разделе XML.</p>
   </div>
-  <form method="post" action="/history/clear-test"><button class="btn btn-danger">Сбросить тестовую историю</button></form>
+  <form method="post" action="/history/clear-test"><button class="btn btn-danger">Очистить тесты</button></form>
 </section>
 
-<section class="premium-card reveal">
-  <div class="card-head"><div><p class="eyebrow">Records</p><h2>История</h2><p class="muted">Всего записей в базе: {{ all_count }}. Показаны только подтверждённые.</p></div></div>
+<section class="premium-card">
+  <div class="card-head"><div><p class="eyebrow">Записи</p><h2>Подтверждённая история</h2></div><span class="badge">{{ all_count }}</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Дата</th><th>Товар</th><th>Старая цена</th><th>Новая цена</th><th>Причина</th></tr></thead>
+      <thead><tr><th>Дата</th><th>Товар</th><th>Было</th><th>Стало</th><th>Причина</th></tr></thead>
       <tbody>
       {% for h in history %}
-      <tr><td>{{ h.created_at }}</td><td>{{ h.product.name if h.product else h.product_id }}</td><td>{{ h.old_price|money }}</td><td>{{ h.new_price|money }}</td><td>{{ h.reason }}</td></tr>
+      <tr><td>{{ h.created_at }}</td><td>{{ h.product.name if h.product else h.product_id }}</td><td>{{ h.old_price|money }}</td><td><b>{{ h.new_price|money }}</b></td><td>{{ h.reason }}</td></tr>
       {% endfor %}
-      {% if not history %}<tr><td colspan="5" class="muted">Пока нет подтверждённых изменений.</td></tr>{% endif %}
+      {% if not history %}<tr><td colspan="5" class="muted">Пока нет записей.</td></tr>{% endif %}
       </tbody>
     </table>
   </div>
