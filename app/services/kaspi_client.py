@@ -262,7 +262,7 @@ class KaspiClient:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36',
         }
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            response = await client.post(url, json=payload, headers=headers)
+            response = await client.get(url, params=payload, headers=headers)
         if response.status_code >= 400:
             raise KaspiApiError(
                 f'Публичная витрина Kaspi не отдала конкурентов: HTTP {response.status_code}. '
