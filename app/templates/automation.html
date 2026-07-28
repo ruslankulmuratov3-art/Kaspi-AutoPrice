@@ -67,6 +67,11 @@
     <button class="btn btn-primary">Запустить автопилот сейчас</button>
   </form>
 
+  <form method="post" action="/automation/stop" class="form compact-form">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <button class="btn btn-danger" data-no-loading="1">Остановить текущий расчёт</button>
+  </form>
+
   <div class="notice info compact"><b>Важно:</b> наш сайт показывает, когда XML создан и когда его открыли. Kaspi не отправляет нам отдельное подтверждение “цены применены”, поэтому финальный статус смотри в кабинете Kaspi → история загрузок.</div>
 </section>
 

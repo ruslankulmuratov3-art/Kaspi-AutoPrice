@@ -153,3 +153,22 @@
 })();
 
 if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/static/service-worker.js').catch(() => {})); }
+
+// Stable autopilot mobile menu + safe loading states
+(function(){
+  const btn = document.querySelector('.mobile-menu');
+  if(btn){
+    btn.addEventListener('click', () => document.body.classList.toggle('menu-open'));
+  }
+  document.querySelectorAll('form').forEach(form => {
+    form.addEventListener('submit', () => {
+      const submit = form.querySelector('button[type="submit"], button:not([type])');
+      if(submit && !submit.dataset.noLoading){
+        submit.dataset.oldText = submit.textContent;
+        submit.textContent = 'Работаю…';
+        submit.disabled = true;
+        setTimeout(()=>{ submit.disabled = false; submit.textContent = submit.dataset.oldText || submit.textContent; }, 15000);
+      }
+    });
+  });
+})();

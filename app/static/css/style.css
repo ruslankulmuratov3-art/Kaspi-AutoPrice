@@ -110,3 +110,42 @@ button{border:0}
 .compact-form { margin-top: 18px; }
 .compact-form label { max-width: 420px; }
 .copy-box code { word-break: break-all; white-space: normal; }
+
+/* Stable autopilot mobile fixes */
+@media (max-width: 920px){
+  body{background:#f6f7fb;}
+  .app-shell{display:block;}
+  .sidebar{position:fixed;left:12px;right:12px;top:12px;width:auto;height:auto;max-height:calc(100vh - 24px);z-index:1000;margin:0;transform:translateY(-130%);transition:transform .28s cubic-bezier(.2,.8,.2,1);overflow:auto;}
+  body.menu-open .sidebar{transform:translateY(0);}
+  .nav-link{min-height:52px;font-size:15px;}
+  .main{padding:10px 10px 24px;}
+  .topbar{top:10px;border-radius:22px;min-height:64px;padding:10px 12px;margin-bottom:12px;}
+  .mobile-menu{display:grid;place-items:center;}
+  .top-actions{display:none;}
+  .hero,.hero-card{border-radius:26px;padding:22px;margin-bottom:12px;}
+  .hero h1,.hero-card h1{font-size:34px;line-height:1.02;letter-spacing:-.06em;}
+  .lead,.big{font-size:15px;line-height:1.55;}
+  .metrics,.small-metrics,.grid-2,.store-layout,.store-grid,.form-grid,.flow{grid-template-columns:1fr!important;gap:12px;}
+  .premium-card{border-radius:24px;padding:18px;margin-bottom:12px;}
+  .card-head{display:block;}
+  .hero-actions,.top-actions,.inline-actions,.store-actions{width:100%;}
+  .btn{width:100%;min-height:48px;}
+  .btn-small{width:auto;min-height:40px;}
+  .form input,.form select,.form textarea,.searchbar input,.inline-form select{font-size:16px;min-height:50px;}
+  .searchbar{display:grid;grid-template-columns:1fr;}
+  .download-form{grid-template-columns:1fr;}
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:20px;}
+  table{min-width:760px;}
+  .archive-item,.timeline-row{display:block;padding:14px;border-radius:18px;}
+  .archive-stats{display:grid;grid-template-columns:1fr;gap:8px;margin:12px 0;}
+  .copy-box code{word-break:break-all;white-space:normal;}
+  .progress-panel{border-radius:20px;padding:14px;}
+}
+
+@media (max-width: 560px){
+  .brand-copy small{display:none;}
+  .topbar-title h3{font-size:16px;}
+  .hero h1,.hero-card h1{font-size:28px;}
+  .premium-card h2,.card-head h2{font-size:20px;}
+  .metric strong{font-size:30px;}
+}

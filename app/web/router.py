@@ -76,6 +76,8 @@ def product_text_matches(product: Product, needle: str) -> bool:
         str(product.name or ''),
         str(product.kaspi_sku or ''),
         str(product.url or ''),
+        str(getattr(product, 'product_id', '') or ''),
+        str(getattr(product, 'model', '') or ''),
         str(getattr(product, 'brand', '') or ''),
         str(getattr(product, 'category', '') or ''),
     ]).casefold()
@@ -339,7 +341,7 @@ async def import_kaspi_excel_page(
         return RedirectResponse(f'/products?store_id={store_id}&error=' + quote('Нужно выбрать Excel .xlsx из Kaspi, например ACTIVE.xlsx'), status_code=303)
     try:
         result = price_list_import_service.import_xlsx(db, store_id=store_id, data=await file.read())
-        msg = f'Excel импортирован: новых {result.created}, обновлено {result.updated}, пропущено {result.skipped}. Неподтверждённых товаров: {result.pending}. Теперь укажи мин/макс/себестоимость.'
+        msg = f'ACTIVE.xlsx импортирован: новых {result.created}, обновлено {result.updated}, пропущено {result.skipped}, не найдено в последнем файле {result.missing}. Неподтверждённых товаров: {result.pending}. Теперь укажи мин/макс/себестоимость один раз — дальше XML будет обновляться сам.'
         db.add(Alert(title='Товары импортированы из Excel', body=msg, type=AlertType.SYSTEM))
         db.commit()
         return RedirectResponse(f'/products?store_id={store_id}&message=' + quote(msg), status_code=303)
@@ -674,13 +676,14 @@ def download_price_list_page(request: Request, record_id: str, db: Session = Dep
     record = generated_price_list_service.get_record(record_id)
     if not record:
         return RedirectResponse('/price-lists?error=' + quote('Файл не найден в архиве'), status_code=303)
-    path = generated_price_list_service.file_path_for(record)
-    if not path:
-        return RedirectResponse('/price-lists?error=' + quote('Файл есть в истории, но сам Excel не найден на диске'), status_code=303)
-    return FileResponse(
-        path,
+    data = generated_price_list_service.get_file_bytes(record_id)
+    if data is None:
+        return RedirectResponse('/price-lists?error=' + quote('Файл есть в истории, но сам Excel не найден. Для Render включи PostgreSQL и пересоздай файл.'), status_code=303)
+    filename = record.get('filename') or 'kaspi_price_list.xlsx'
+    return StreamingResponse(
+        BytesIO(data),
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        filename=record.get('filename') or 'kaspi_price_list.xlsx',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
     )
 
 
@@ -754,6 +757,14 @@ async def autopilot_run_now_page(
     except Exception as exc:
         return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
 
+
+@web_router.post('/automation/stop')
+def autopilot_stop_page(request: Request, store_id: int = Form(...), db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    autopilot_service.request_stop(store_id)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote('Автопилот остановится после текущих товаров. XML и товары не удаляются.'), status_code=303)
 
 @web_router.post('/automation/rebuild-xml')
 async def rebuild_xml_feed_page(
@@ -868,10 +879,10 @@ async def kaspi_xml_feed(request: Request, store_id: int, db: Session = Depends(
     # Логируем любое открытие XML: это может быть Kaspi, браузер, проверка вручную или мониторинг.
     # Это не подтверждение применения цен в Kaspi, а факт запроса нашего XML-файла.
     xml_feed_service.log_pull(store_id, request)
-    path = xml_feed_service.file_path_for(store_id)
-    if not path:
+    xml_text = xml_feed_service.get_xml_text(store_id)
+    if not xml_text:
         return Response('<?xml version="1.0" encoding="utf-8"?><kaspi_catalog xmlns="kaspiShopping"><company></company><merchantid></merchantid><offers></offers></kaspi_catalog>', media_type='application/xml')
-    return FileResponse(path, media_type='application/xml', filename=f'kaspi_store_{store_id}.xml')
+    return Response(xml_text, media_type='application/xml', headers={'Content-Disposition': f'inline; filename="kaspi_store_{store_id}.xml"'})
 
 
 @web_router.get('/xml-history', response_class=HTMLResponse)
