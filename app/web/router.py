@@ -407,6 +407,7 @@ def bulk_setup_products_page(
             db.add(PricingRule(product_id=product.id))
             db.flush()
         rule = product.pricing_rule
+        rule.strategy = PricingStrategy.BEAT_BY_STEP
         rule.beat_step = beat_step
         rule.max_change_percent_per_run = max_change_percent_per_run
         rule.min_margin_percent = min_margin_percent
