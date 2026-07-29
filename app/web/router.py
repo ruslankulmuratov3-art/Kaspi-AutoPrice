@@ -903,7 +903,13 @@ async def kaspi_xml_feed(request: Request, store_id: int, db: Session = Depends(
     xml_feed_service.log_pull(store_id, request)
     xml_text = xml_feed_service.get_xml_text(store_id)
     if not xml_text:
-        return Response('<?xml version="1.0" encoding="utf-8"?><kaspi_catalog xmlns="kaspiShopping"><company></company><merchantid></merchantid><offers></offers></kaspi_catalog>', media_type='application/xml')
+        # Важно: не отдаём пустой <offers/>. Пустой прайс может быть опаснее ошибки,
+        # потому что маркетплейс может принять его как отсутствие товаров.
+        return Response(
+            '<?xml version="1.0" encoding="utf-8"?><error>XML ещё не создан. Сначала импортируй ACTIVE.xlsx и собери XML.</error>',
+            media_type='application/xml',
+            status_code=503,
+        )
     return Response(xml_text, media_type='application/xml', headers={'Content-Disposition': f'inline; filename="kaspi_store_{store_id}.xml"'})
 
 

@@ -1,25 +1,21 @@
-Kaspi public offers patch
+Kaspi Official API Safe Patch
 
-Что делает:
-- добавляет загрузку конкурентов с публичной витрины Kaspi через https://kaspi.kz/yml/offer-view/offers/{productId}
-- добавляет поле URL товара Kaspi
-- добавляет безопасную кнопку "Загрузить конкурентов" — она только читает, цену не меняет
-- скрывает глобальную кнопку "Запустить автоцены" сверху, чтобы случайно не пройтись по всем товарам
-- оставляет изменение твоей цены только через официальный Kaspi API
+Что исправляет:
+1) Не имитирует прямое изменение цены через /products/import.
+2) Direct API mode выключен, пока Kaspi не даст официальный endpoint изменения цены.
+3) XML Mode остаётся основным безопасным способом.
+4) При ошибках конкурентов 405/429 цена не меняется вслепую.
+5) Если есть сохранённый кэш конкурентов, он используется безопасно.
+6) Если автопилот остановлен, новый частичный XML не сохраняется.
+7) Если XML ещё не создан, /kaspi-feed/{store_id}.xml отдаёт 503, а не пустой <offers/>.
+8) Поставлены безопасные дефолты: concurrency=1, delay=5s, cache=360min, offers_limit=10.
 
-Как поставить:
-1) Останови сервер Ctrl+C.
-2) Скопируй эти файлы с заменой в свою папку kaspi_saas_real.
-3) В .env добавь, если нет:
-   KASPI_PUBLIC_OFFERS_ENABLED=true
-   KASPI_PUBLIC_OFFERS_BASE_URL=https://kaspi.kz/yml/offer-view/offers
-   KASPI_PUBLIC_CITY_ID=750000000
-   KASPI_PUBLIC_OFFERS_LIMIT=30
-   KASPI_PUBLIC_SORT_OPTION=PRICE
-4) Запусти сервер:
-   .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+После установки:
+- git add .
+- git commit -m "Fix official Kaspi API and safe XML autopilot"
+- git push
 
-Важно:
-- Твой .env не отправляй никому.
-- Сначала нажимай только "Загрузить конкурентов".
-- "Рассчитать и отправить автоцену" меняет цену в Kaspi.
+Запуск локально:
+$env:PYTHONPATH="."
+.\.venv\Scripts\python.exe scripts\seed.py
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload

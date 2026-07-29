@@ -179,10 +179,14 @@ class KaspiClient:
         return self._parse_import_response(self._safe_json(response))
 
     async def update_price(self, product: Product, store: Store, new_price: float) -> bool:
-        """Send a REAL price update request to Kaspi.
+        """Direct price update through Kaspi API only when an official endpoint is configured.
 
-        По умолчанию используется product import JSON. Если твой доступ принимает XML
-        прайс-лист, поставь KASPI_PRICE_UPDATE_FORMAT=xml_catalog.
+        Важно: официально задокументированный /products/import возвращает код импорта товара
+        и не является подтверждённым прямым endpoint для мгновенного изменения цены одного SKU.
+        Поэтому этот метод НЕ имитирует успешное изменение цены через /products/import.
+
+        Основной рабочий способ обновления цен в проекте — полный XML-прайс
+        /kaspi-feed/{store_id}.xml, который Kaspi забирает из кабинета продавца.
         """
         if not store:
             raise KaspiApiError('У товара нет магазина.')
@@ -194,15 +198,26 @@ class KaspiClient:
         if product.max_price and product.max_price > 0 and price_int > int(product.max_price):
             raise KaspiApiError(f'Новая цена {price_int} выше максимальной цены товара {product.max_price}.')
 
-        if settings.KASPI_PRICE_UPDATE_FORMAT == 'xml_catalog':
-            xml_text = self.build_price_xml([product], {product.kaspi_sku: price_int}, store)
-            result = await self.import_catalog_xml(xml_text, store)
-        else:
-            payload = [self.build_product_import_item(product, price_int, store)]
-            result = await self.import_products_json(payload, store)
-
-        logger.info('Kaspi real price update requested: sku=%s price=%s import_code=%s status=%s',
-                    product.kaspi_sku, price_int, result.code, result.status)
+        if not bool(getattr(settings, 'KASPI_DIRECT_PRICE_API_ENABLED', False)):
+            raise KaspiFeatureNotConfigured(
+                'Прямой API изменения цены не включён и не подтверждён. '
+                'Используй XML Mode: сайт создаёт полный XML-прайс, а Kaspi забирает его по ссылке.'
+            )
+        path = str(getattr(settings, 'KASPI_DIRECT_PRICE_UPDATE_PATH', '') or '').strip()
+        if not path:
+            raise KaspiFeatureNotConfigured(
+                'KASPI_DIRECT_PRICE_UPDATE_PATH пустой. Укажи официальный endpoint Kaspi, если он выдан партнёру.'
+            )
+        method = str(getattr(settings, 'KASPI_DIRECT_PRICE_UPDATE_METHOD', 'POST') or 'POST').upper()
+        payload = {
+            'sku': product.kaspi_sku,
+            'price': price_int,
+            'storeId': settings.KASPI_STORE_ID.strip() or store.merchant_id,
+            'merchantId': settings.KASPI_MERCHANT_ID.strip() or store.merchant_id,
+        }
+        response = await self._request(method, path, store, json=payload, content_type='application/json')
+        logger.info('Kaspi direct price API requested: sku=%s price=%s status_code=%s',
+                    product.kaspi_sku, price_int, response.status_code)
         return True
 
     async def get_product_offers(self, product: Product, store: Store) -> list[KaspiOffer]:
@@ -256,8 +271,7 @@ class KaspiClient:
         }
         headers = {
             'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/json',
-            'Origin': 'https://kaspi.kz',
+                        'Origin': 'https://kaspi.kz',
             'Referer': referer,
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36',
         }
@@ -265,8 +279,8 @@ class KaspiClient:
             response = await client.get(url, params=payload, headers=headers)
         if response.status_code >= 400:
             raise KaspiApiError(
-                f'Публичная витрина Kaspi не отдала конкурентов: HTTP {response.status_code}. '
-                f'Это может быть ограничение Kaspi/города/капча. Товар: {product_id}. Ответ: {response.text[:500]}'
+                f'Конкуренты временно недоступны: HTTP {response.status_code}. '
+                f'Цена будет оставлена без изменений или взята из кэша. Товар: {product_id}. Ответ: {response.text[:500]}'
             )
         try:
             data = response.json()

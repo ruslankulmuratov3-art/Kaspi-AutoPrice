@@ -38,13 +38,18 @@ class Settings(BaseSettings):
     KASPI_PRODUCTS_IMPORT_PATH: str = '/products/import'
     KASPI_IMPORT_STATUS_PATH: str = '/products/import'
     KASPI_IMPORT_RESULT_PATH: str = '/products/import/result'
-    KASPI_PRICE_UPDATE_FORMAT: str = 'json_import'  # json_import or xml_catalog
+    # Официальный /products/import нужен для добавления/проверки товаров.
+    # Прямое изменение цены через API включаем только если Kaspi выдал отдельный подтверждённый endpoint.
+    KASPI_PRICE_UPDATE_FORMAT: str = 'xml_catalog'  # основной безопасный режим: xml_catalog. json_import не используем как прямую цену.
+    KASPI_DIRECT_PRICE_API_ENABLED: bool = False
+    KASPI_DIRECT_PRICE_UPDATE_PATH: str = ''
+    KASPI_DIRECT_PRICE_UPDATE_METHOD: str = 'POST'
     # Конкуренты через публичную витрину Kaspi. Это НЕ Seller API.
     # Включено для мониторинга публичных предложений по одному товару.
     KASPI_PUBLIC_OFFERS_ENABLED: bool = True
     KASPI_PUBLIC_OFFERS_BASE_URL: str = 'https://kaspi.kz/yml/offer-view/offers'
     KASPI_PUBLIC_CITY_ID: str = '750000000'  # Алматы
-    KASPI_PUBLIC_OFFERS_LIMIT: int = 30
+    KASPI_PUBLIC_OFFERS_LIMIT: int = 10
     KASPI_PUBLIC_SORT_OPTION: str = 'PRICE'
     # Если у тебя появится официальный/партнёрский endpoint офферов, можно указать его здесь.
     KASPI_OFFERS_URL_TEMPLATE: str = ''
@@ -60,11 +65,12 @@ class Settings(BaseSettings):
     KASPI_AUTOPILOT_MAX_PRODUCTS_PER_RUN: int = 5000
     KASPI_AUTOPILOT_WAREHOUSE_ID: str = 'PP1'
     KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE: bool = True
-    KASPI_AUTOPILOT_DELAY_SECONDS: float = 0.0
+    KASPI_AUTOPILOT_DELAY_SECONDS: float = 5.0
     KASPI_XML_REBUILD_ON_PULL: bool = True
     KASPI_XML_STALE_AFTER_MINUTES: int = 55
-    KASPI_COMPETITOR_CACHE_MINUTES: int = 15
-    KASPI_AUTOPILOT_CONCURRENCY: int = 3
+    KASPI_COMPETITOR_CACHE_MINUTES: int = 360
+    KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR: bool = True
+    KASPI_AUTOPILOT_CONCURRENCY: int = 1
     KASPI_AUTOPILOT_ONLY_IN_STOCK: bool = True
     KASPI_DEFAULT_STORE_AUTO_CREATE: bool = True
 

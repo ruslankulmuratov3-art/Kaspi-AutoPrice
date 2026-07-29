@@ -158,7 +158,7 @@ class AutoPilotService:
                     new_price = int(round(float(decision.suggested_price)))
                     status = 'changed' if new_price != old_price else 'same'
                 else:
-                    if str(reason).startswith('Kaspi:') or 'HTTP 405' in str(reason) or '?????????? ?? ????????' in str(reason):
+                    if str(reason).startswith('Kaspi:') or 'HTTP 405' in str(reason) or 'HTTP 429' in str(reason) or 'Конкуренты временно недоступны' in str(reason) or 'Method Not Allowed' in str(reason):
                         status = 'error'
                     else:
                         status = 'skipped'
@@ -234,6 +234,9 @@ class AutoPilotService:
                 async with semaphore:
                     if store_id in self._stop_flags:
                         return {'product_id': pid, 'sku': '', 'name': '', 'old_price': 0, 'new_price': 0, 'delta': 0, 'changed': False, 'reason': 'Остановлено пользователем', 'status': 'stopped'}
+                    delay = float(getattr(settings, 'KASPI_AUTOPILOT_DELAY_SECONDS', 5) or 0)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
                     return await self._process_one(pid, bool(update_local_prices))
 
             tasks = [asyncio.create_task(guarded(pid)) for pid in product_ids]
@@ -266,7 +269,29 @@ class AutoPilotService:
                 if store_id in self._stop_flags:
                     break
 
+            if store_id in self._stop_flags:
+                self._stop_flags.discard(store_id)
+                result = {
+                    'store_id': store_id,
+                    'ok': False,
+                    'stopped': True,
+                    'message': 'Автопилот остановлен. Новый XML не сохранён, Kaspi отдаётся последняя безопасная версия.',
+                    'processed': processed,
+                    'changed': changed,
+                    'skipped': skipped,
+                    'errors': errors,
+                    'reason': reason,
+                }
+                self._last_status[store_id] = {**result, 'running': False, 'percent': round(processed / max(1, total) * 100, 1), 'concurrency': concurrency}
+                return result
+
             products = db.query(Product).filter(Product.id.in_(product_ids)).order_by(Product.id.asc()).all()
+            # XML всегда должен содержать полный выбранный набор товаров. Даже если часть товаров
+            # не проверилась из-за 405/429, для них будет использована текущая безопасная цена.
+            for product in products:
+                sku = str(product.kaspi_sku or '')
+                if sku and sku not in price_by_sku:
+                    price_by_sku[sku] = int(round(float(product.current_price or 0)))
             record = xml_feed_service.save_feed(
                 store=store,
                 products=products,

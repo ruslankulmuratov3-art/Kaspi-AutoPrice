@@ -88,8 +88,17 @@ class PricingEngine:
             return PricingDecision(product.id, old_price, old_price, 'Цена уже оптимальная', False)
         return PricingDecision(product.id, old_price, candidate, reason, True)
 
+    def _rows_to_offers(self, rows: list[CompetitorOffer]) -> list[KaspiOffer]:
+        return [KaspiOffer(r.seller_name, r.seller_id, float(r.price or 0), int(r.delivery_days or 0), int(r.position or 0)) for r in rows]
+
+    def _all_cached_offers(self, db: Session, product: Product) -> list[KaspiOffer] | None:
+        rows = db.query(CompetitorOffer).filter(CompetitorOffer.product_id == product.id).order_by(CompetitorOffer.price.asc()).all()
+        if not rows:
+            return None
+        return self._rows_to_offers(rows)
+
     def _cached_offers(self, db: Session, product: Product) -> list[KaspiOffer] | None:
-        cache_minutes = int(getattr(settings, 'KASPI_COMPETITOR_CACHE_MINUTES', 15) or 0)
+        cache_minutes = int(getattr(settings, 'KASPI_COMPETITOR_CACHE_MINUTES', 360) or 0)
         if cache_minutes <= 0:
             return None
         checked_at = getattr(product, 'last_competitor_checked_at', None)
@@ -100,17 +109,26 @@ class PricingEngine:
                 return None
         except Exception:
             return None
-        rows = db.query(CompetitorOffer).filter(CompetitorOffer.product_id == product.id).order_by(CompetitorOffer.price.asc()).all()
-        if not rows:
-            return None
-        return [KaspiOffer(r.seller_name, r.seller_id, float(r.price or 0), int(r.delivery_days or 0), int(r.position or 0)) for r in rows]
+        return self._all_cached_offers(db, product)
 
     async def refresh_competitors(self, db: Session, product: Product, *, force: bool = False) -> list[KaspiOffer]:
         if not force:
             cached = self._cached_offers(db, product)
             if cached is not None:
                 return cached
-        offers = await kaspi_client.get_product_offers(product, product.store)
+        try:
+            offers = await kaspi_client.get_product_offers(product, product.store)
+        except KaspiApiError as exc:
+            cached_any = self._all_cached_offers(db, product)
+            if cached_any and bool(getattr(settings, 'KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR', True)):
+                product.last_autopilot_error = f'Конкуренты Kaspi недоступны ({str(exc)[:250]}). Использован последний сохранённый кэш.'
+                db.add(product)
+                db.commit()
+                return cached_any
+            product.last_autopilot_error = f'Конкуренты временно недоступны. Цена оставлена без изменений. {str(exc)[:600]}'
+            db.add(product)
+            db.commit()
+            raise
         db.query(CompetitorOffer).filter(CompetitorOffer.product_id == product.id).delete()
         min_price = 0.0
         for offer in offers:
@@ -150,10 +168,10 @@ class PricingEngine:
         except KaspiApiError as exc:
             return PricingDecision(product.id, old_price, old_price, f'Kaspi API: {exc}', False)
         if ok:
-            db.add(PriceHistory(product_id=product.id, old_price=old_price, new_price=old_price, reason='Ручная отправка текущей цены в Kaspi API', source='manual'))
+            db.add(PriceHistory(product_id=product.id, old_price=old_price, new_price=old_price, reason='Прямой API-запрос Kaspi подтверждён', source='api_confirmed'))
             db.add(Alert(title='Цена отправлена в Kaspi', body=f'{product.name}: {old_price:.0f} тг', type=AlertType.SYSTEM))
             db.commit()
-        return PricingDecision(product.id, old_price, old_price, 'Текущая цена отправлена в реальный Kaspi API', True)
+        return PricingDecision(product.id, old_price, old_price, 'API подтвердил запрос изменения цены', True)
 
     async def apply_product(self, db: Session, product: Product) -> PricingDecision:
         decision = await self.preview_product(db, product)
@@ -163,7 +181,7 @@ class PricingEngine:
         if ok:
             old = product.current_price
             product.current_price = decision.suggested_price
-            db.add(PriceHistory(product_id=product.id, old_price=old, new_price=decision.suggested_price, reason=decision.reason, source='auto'))
+            db.add(PriceHistory(product_id=product.id, old_price=old, new_price=decision.suggested_price, reason=decision.reason, source='api_confirmed'))
             db.add(Alert(title='Цена изменена', body=f'{product.name}: {old:.0f} → {decision.suggested_price:.0f} тг', type=AlertType.PRICE_CHANGED))
             db.add(product)
             db.commit()
