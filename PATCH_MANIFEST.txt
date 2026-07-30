@@ -1,3 +1,4 @@
-Hotfix: expose trusted local-agent API routes.
+Hotfix: add web button /automation/cancel-active to cancel stuck jobs and clear old direct-source cooldown.
 Changed:
-- app/api/router.py
+- app/web/router.py
+- app/templates/automation.html

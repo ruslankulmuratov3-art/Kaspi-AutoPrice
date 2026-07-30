@@ -17,6 +17,7 @@ from app.models.pricing_rule import PricingRule, PricingStrategy
 from app.models.alert import Alert, AlertType
 from app.models.user import User, UserRole
 from app.models.access import AgentDevice, InviteCode, InviteKind
+from app.models.autopilot import AutopilotJob, AutopilotJobStatus, CompetitorSourceState
 from app.repositories.users import users
 from app.services.auth_service import auth_service
 from app.services.access_service import access_service
@@ -908,6 +909,49 @@ def autopilot_stop_page(request: Request, store_id: int = Form(...), db: Session
         return login_redirect()
     autopilot_service.request_stop(store_id)
     return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote('Остановка запрошена. Текущий товар завершится безопасно.'), status_code=303)
+
+
+
+@web_router.post('/automation/cancel-active')
+def autopilot_cancel_active_page(request: Request, store_id: int = Form(...), db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    now = datetime.utcnow()
+    jobs = db.query(AutopilotJob).filter(
+        AutopilotJob.store_id == int(store_id),
+        AutopilotJob.status.in_([
+            AutopilotJobStatus.QUEUED,
+            AutopilotJobStatus.RUNNING,
+            AutopilotJobStatus.PAUSED,
+            AutopilotJobStatus.ERROR,
+        ]),
+    ).all()
+    for job in jobs:
+        job.status = AutopilotJobStatus.CANCELLED
+        job.stop_requested = True
+        job.finished_at = now
+        job.updated_at = now
+        if not job.error_message:
+            job.error_message = 'Отменено администратором для перезапуска через доверенных агентов.'
+        db.add(job)
+
+    state = db.query(CompetitorSourceState).filter(
+        CompetitorSourceState.source_key == competitor_service.SOURCE_KEY
+    ).first()
+    if state:
+        state.state = 'closed'
+        state.failure_count = 0
+        state.cooldown_until = None
+        state.last_error = ''
+        state.last_http_status = None
+        db.add(state)
+
+    db.commit()
+    return RedirectResponse(
+        f'/automation?store_id={store_id}&message=' + quote(f'Активные задания отменены: {len(jobs)}. Запусти заново после партии агента.'),
+        status_code=303,
+    )
 
 
 @web_router.post('/automation/resume')

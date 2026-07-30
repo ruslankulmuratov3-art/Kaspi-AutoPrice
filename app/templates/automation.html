@@ -81,6 +81,10 @@
         <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
         <button class="btn btn-danger btn-wide" data-no-loading="1">Остановить безопасно</button>
       </form>
+      <form method="post" action="/automation/cancel-active" onsubmit="return confirm('Отменить текущие задания и очистить старую паузу источника?')">
+        <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+        <button class="btn btn-soft btn-wide" data-no-loading="1">Сбросить старое задание</button>
+      </form>
       {% if latest_job and latest_job.status.value in ['paused','error','cancelled'] %}
       <form method="post" action="/automation/resume">
         <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
