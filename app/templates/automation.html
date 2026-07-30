@@ -1,112 +1,118 @@
 {% extends "base.html" %}
 {% block title %}Автопилот — Kaspi AutoPrice{% endblock %}
 {% block content %}
-<section class="hero-card">
-  <p class="eyebrow">Автопилот</p>
-  <h1>XML обновляется автоматически</h1>
-  <p class="big">Сайт пересчитывает цены и отдаёт XML. Kaspi забирает файл по ссылке.</p>
+<section class="hero-card reveal">
+  <div>
+    <p class="eyebrow">Автопилот</p>
+    <h1>Безопасный пересчёт цен</h1>
+    <p class="lead">Полный XML, кэш конкурентов и защита от 405/429.</p>
+  </div>
   <div class="hero-actions">
-    <a class="btn btn-primary" href="{{ feed_url }}" target="_blank">Открыть XML</a>
-    <a class="btn btn-soft" href="/xml-history?store_id={{ selected_store_id }}">История</a>
+    {% if feed_url %}<a class="btn btn-primary" href="{{ feed_url }}" target="_blank">Открыть XML</a>{% endif %}
+    <a class="btn btn-soft" href="/xml-history?store_id={{ selected_store_id or '' }}">История</a>
   </div>
 </section>
 
-{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
-{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+{% if message %}<div class="notice success toast-auto">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger toast-auto">{{ error }}</div>{% endif %}
 
-<section class="grid-2">
+<section class="grid-2 reveal delay-1">
   <form class="premium-card form" method="get" action="/automation">
-    <div class="card-head"><div><p class="eyebrow">Магазин</p><h2>{{ selected_store.name if selected_store else 'Не выбран' }}</h2></div><span class="badge">{{ ready_count }} готово</span></div>
+    <div class="card-head">
+      <div><p class="eyebrow">Магазин</p><h2>{{ selected_store.name if selected_store else 'Не выбран' }}</h2></div>
+      <span class="badge">{{ active_count }} товаров</span>
+    </div>
     <label>Выбрать
       <select name="store_id" onchange="this.form.submit()">
-        {% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
+        {% for store in stores %}<option value="{{ store.id }}" {% if store.id == selected_store_id %}selected{% endif %}>{{ store.name }} · {{ store.merchant_id }}</option>{% endfor %}
       </select>
     </label>
   </form>
 
   <div class="premium-card">
-    <div class="card-head"><div><p class="eyebrow">XML ссылка</p><h2>Для Kaspi</h2></div><span class="badge on">активна</span></div>
-    <div class="copy-box"><code id="feed-url">{{ feed_url }}</code><button class="btn btn-small" type="button" data-copy="#feed-url">Копировать</button></div>
-    <p class="muted small-note">Вставьте эту ссылку в автозагрузку прайс-листа Kaspi.</p>
+    <div class="card-head">
+      <div><p class="eyebrow">XML</p><h2>Ссылка для Kaspi</h2></div>
+      <span class="badge {{ 'on' if feed_record else 'hot' }}">{{ 'готов' if feed_record else 'нет файла' }}</span>
+    </div>
+    <div class="copy-box"><code id="feed-url">{{ feed_url or 'Сначала создайте XML' }}</code>{% if feed_url %}<button class="btn btn-small" type="button" data-copy="#feed-url">Копировать</button>{% endif %}</div>
+    <p class="muted small-note">Запрос XML не запускает тяжёлый расчёт.</p>
   </div>
 </section>
 
-<section class="metrics small-metrics">
-  <div class="metric premium-card"><span>Готовые товары</span><strong>{{ ready_count }}</strong><small>пойдут в XML</small></div>
-  <div class="metric premium-card"><span>Изменено в XML</span><strong>{{ feed_record.changed if feed_record else 0 }}</strong><small>последняя версия</small></div>
-  <div class="metric premium-card"><span>Лимит изменений</span><strong>{{ price_change_budget.used }} / {{ price_change_budget.effective_limit }}</strong><small>осталось {{ price_change_budget.remaining }} за {{ price_change_budget.window_minutes }} мин.</small></div>
-  <div class="metric premium-card"><span>Последний запрос</span><strong>{{ feed_pulls[0].accessed_at if feed_pulls else '—' }}</strong><small>Kaspi/браузер</small></div>
+<section class="metrics reveal delay-2" data-live-dashboard data-store-id="{{ selected_store_id or 0 }}">
+  <div class="metric premium-card"><span>Готово к расчёту</span><strong data-metric="ready">{{ ready_count }}</strong><small>с лимитами</small></div>
+  <div class="metric premium-card"><span>Активный XML</span><strong data-metric="feed-products">{{ feed_record.product_count if feed_record else 0 }}</strong><small>из {{ active_count }} товаров</small></div>
+  <div class="metric premium-card"><span>Лимит цен</span><strong data-metric="budget">{{ price_change_budget.used }} / {{ price_change_budget.effective_limit }}</strong><small>в очереди {{ price_change_budget.queued or 0 }}</small></div>
+  <div class="metric premium-card"><span>Конкуренты</span><strong class="metric-status {{ 'danger-text' if competitor_state.state == 'open' else '' }}" data-metric="source-state">{{ 'пауза' if competitor_state.state == 'open' else 'доступны' }}</strong><small data-metric="source-note">{% if competitor_state.cooldown_until %}до {{ competitor_state.cooldown_until }}{% else %}кэш {{ settings.KASPI_COMPETITOR_CACHE_MINUTES if settings is defined else 360 }} мин.{% endif %}</small></div>
 </section>
 
-<section class="premium-card">
+<section class="premium-card reveal delay-3">
   <div class="card-head">
-    <div><p class="eyebrow">Расчёт</p><h2>Статус автопилота</h2></div>
-    <span class="badge {{ 'on' if autopilot_status and autopilot_status.running else '' }}">{{ 'Работает' if autopilot_status and autopilot_status.running else 'Ожидает' }}</span>
+    <div><p class="eyebrow">Задание</p><h2>Статус автопилота</h2></div>
+    {% set job_status = autopilot_status.status if autopilot_status else 'idle' %}
+    <span class="badge {% if job_status == 'running' %}on pulse{% elif job_status in ['error','cancelled'] %}hot{% endif %}" data-job-badge>{{ {'queued':'В очереди','running':'Работает','paused':'Пауза','done':'Готово','error':'Ошибка','cancelled':'Отменено'}.get(job_status, 'Ожидает') }}</span>
   </div>
 
-  {% if autopilot_status %}
-  <div class="progress-panel">
-    <div class="progress-head"><b>{{ autopilot_status.processed_now or autopilot_status.processed or 0 }} / {{ autopilot_status.total or autopilot_status.processed or 0 }}</b><span>{{ autopilot_status.percent or 0 }}%</span></div>
-    <div class="progress-track"><i style="width: {{ autopilot_status.percent or 0 }}%"></i></div>
-    <p class="muted">Кандидатов {{ autopilot_status.suggested or autopilot_status.changed or 0 }} · применено {{ autopilot_status.changed or 0 }} · очередь {{ autopilot_status.queued or 0 }} · без изменений {{ autopilot_status.skipped or 0 }} · ошибок {{ autopilot_status.errors or 0 }}</p>
+  <div class="progress-panel" data-job-panel>
+    <div class="progress-head"><b><span data-job-processed>{{ autopilot_status.processed_now if autopilot_status else 0 }}</span> / <span data-job-total>{{ autopilot_status.total if autopilot_status else 0 }}</span></b><span data-job-percent>{{ autopilot_status.percent if autopilot_status else 0 }}%</span></div>
+    <div class="progress-track"><i data-job-bar style="width: {{ autopilot_status.percent if autopilot_status else 0 }}%"></i></div>
+    <div class="job-stats">
+      <span>изменено <b data-job-changed>{{ autopilot_status.changed if autopilot_status else 0 }}</b></span>
+      <span>без изменений <b data-job-skipped>{{ autopilot_status.skipped if autopilot_status else 0 }}</b></span>
+      <span>очередь <b data-job-queued>{{ autopilot_status.queued if autopilot_status else 0 }}</b></span>
+      <span>ошибки <b data-job-errors>{{ autopilot_status.errors if autopilot_status else 0 }}</b></span>
+    </div>
+    {% if autopilot_status and autopilot_status.error %}<p class="notice danger compact">{{ autopilot_status.error }}</p>{% endif %}
   </div>
-  {% else %}
-  <div class="empty-archive">Запустите автопилот после импорта и лимитов.</div>
-  {% endif %}
 
-  <div class="grid-2">
+  <div class="grid-2 action-grid">
     <form method="post" action="/automation/run-now" class="form">
-      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
-      <label>Склад Kaspi<input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}" placeholder="PP1"></label>
-      <button class="btn btn-primary">Запустить</button>
-    </form>
-    <form method="post" action="/automation/stop" class="form">
-      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
-      <label>Остановка<span class="muted">Остановит текущий расчёт.</span></label>
-      <button class="btn btn-danger" data-no-loading="1">Остановить</button>
-    </form>
-  </div>
-</section>
-
-<section class="grid-2">
-  <div class="premium-card">
-    <div class="card-head"><div><p class="eyebrow">XML</p><h2>Последняя версия</h2></div></div>
-    {% if feed_record %}
-    <div class="archive-item">
-      <div><b>{{ feed_record.filename }}</b><small>{{ feed_record.updated_at }} · {{ (feed_record.size_bytes / 1024)|round(1) }} KB</small></div>
-      <div class="archive-stats"><span>товаров <b>{{ feed_record.processed }}</b></span><span>изменено <b>{{ feed_record.changed }}</b></span><span>очередь <b>{{ feed_record.queued or 0 }}</b></span></div>
-      <a class="btn btn-small" href="{{ feed_url }}" target="_blank">Открыть</a>
-    </div>
-    {% else %}
-    <div class="empty-archive">XML ещё не создан.</div>
-    {% endif %}
-  </div>
-
-  <div class="premium-card">
-    <div class="card-head"><div><p class="eyebrow">Запросы</p><h2>Кто открывал XML</h2></div><a class="btn btn-small" href="/xml-history?store_id={{ selected_store_id }}">Все</a></div>
-    <div class="mini-timeline">
-      {% for pull in feed_pulls %}
-      <div class="timeline-row"><b>{{ pull.accessed_at }}</b><span>{{ 'похоже Kaspi' if pull.likely_kaspi else 'открытие' }}</span><small>{{ pull.ip }} · {{ pull.user_agent[:70] }}</small></div>
-      {% endfor %}
-      {% if not feed_pulls %}<div class="empty-archive">Запросов пока нет.</div>{% endif %}
-    </div>
-  </div>
-</section>
-
-<section class="accordion muted-section">
-  <button class="accordion-trigger premium-card" type="button" data-accordion="manual-xml"><span>Ручная пересборка XML</span><b>＋</b></button>
-  <div class="accordion-content" id="manual-xml">
-    <form method="post" action="/automation/rebuild-xml" class="premium-card form">
       <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
       <div class="form-grid">
         <label>Склад<input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}"></label>
-        <label>Количество<input name="limit_count" type="number" value="100" min="0" step="1"></label>
-        <label>Поиск<input name="q_filter" placeholder="название или SKU"></label>
+        <label>Товаров за запуск<input name="limit_count" type="number" value="0" min="0" max="5000"><small>0 — все</small></label>
+        <label>Фильтр<input name="q_filter" placeholder="Название или SKU"></label>
       </div>
-      <button class="btn btn-soft">Пересобрать</button>
+      <button class="btn btn-primary">Запустить</button>
     </form>
+
+    <div class="form control-stack">
+      <form method="post" action="/automation/stop">
+        <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+        <button class="btn btn-danger btn-wide" data-no-loading="1">Остановить безопасно</button>
+      </form>
+      {% if latest_job and latest_job.status.value in ['paused','error','cancelled'] %}
+      <form method="post" action="/automation/resume">
+        <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+        <input type="hidden" name="job_id" value="{{ latest_job.id }}">
+        <button class="btn btn-soft btn-wide">Продолжить №{{ latest_job.id }}</button>
+      </form>
+      {% endif %}
+      <p class="muted small-note">При 405/429 запросы прекращаются, включается пауза, цена остаётся прежней или берётся из кэша.</p>
+    </div>
   </div>
 </section>
 
-<div class="notice info compact">За одно 30-минутное окно приложение выпускает максимум 240 новых цен из лимита 250. Остальные изменения переходят в очередь. Мы видим запрос XML, а подтверждение обработки смотрите в кабинете Kaspi.</div>
+<section class="grid-2 reveal delay-4">
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Последняя версия</p><h2>Активный XML</h2></div>{% if feed_record %}<span class="badge on">{{ feed_record.status }}</span>{% endif %}</div>
+    {% if feed_record %}
+    <div class="archive-item">
+      <div><b>{{ feed_record.filename }}</b><small>{{ feed_record.updated_at }} · {{ (feed_record.size_bytes / 1024)|round(1) }} KB</small></div>
+      <div class="archive-stats"><span>{{ feed_record.product_count }} товаров</span><span>{{ feed_record.changed }} цен</span><span>{{ feed_record.queued or 0 }} в очереди</span></div>
+      <a class="btn btn-small" href="/xml-history?store_id={{ selected_store_id }}&feed_id={{ feed_record.feed_id }}">Детали</a>
+    </div>
+    {% else %}<div class="empty-archive">XML ещё не создан.</div>{% endif %}
+  </div>
+
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Источник конкурентов</p><h2>{{ 'Ожидание' if competitor_state.state == 'open' else 'Готов' }}</h2></div><span class="status-dot {{ 'off' if competitor_state.state == 'open' else 'on' }}"></span></div>
+    {% if competitor_state.state == 'open' %}
+      <p class="muted">Следующая попытка после {{ competitor_state.cooldown_until or 'паузы' }}.</p>
+      <p class="small-note">HTTP {{ competitor_state.last_http_status or '—' }} · {{ competitor_state.last_error[:120] }}</p>
+    {% else %}
+      <p class="muted">Ошибки одного товара не останавливают XML. Свежий кэш используется без нового запроса.</p>
+    {% endif %}
+  </div>
+</section>
 {% endblock %}

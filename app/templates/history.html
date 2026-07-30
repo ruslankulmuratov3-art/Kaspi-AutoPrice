@@ -1,28 +1,14 @@
 {% extends "base.html" %}
 {% block title %}История — Kaspi AutoPrice{% endblock %}
 {% block content %}
-{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
-<section class="hero">
-  <div>
-    <p class="eyebrow">История</p>
-    <h1>Изменения цен</h1>
-    <p class="lead">Подтверждённые записи. XML-детали смотрите в разделе XML.</p>
-  </div>
-  <form method="post" action="/history/clear-test"><button class="btn btn-danger">Очистить тесты</button></form>
+{% if message %}<div class="notice success toast-auto">{{ message }}</div>{% endif %}
+<section class="hero-card reveal"><div><p class="eyebrow">История</p><h1>Цены и источники</h1><p class="lead">Подготовленные XML-изменения и подтверждённые операции.</p></div></section>
+<section class="premium-card reveal delay-1">
+  <div class="card-head"><div><p class="eyebrow">Записи</p><h2>Последние изменения</h2></div><span class="badge">{{ all_count }}</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Дата</th><th>Товар</th><th>Было</th><th>Стало</th><th>Источник</th><th>Причина</th></tr></thead><tbody>
+  {% for item in history %}<tr><td>{{ item.created_at }}</td><td><b>{{ item.product.name if item.product else item.product_id }}</b><small>{{ item.product.kaspi_sku if item.product else '' }}</small></td><td>{{ item.old_price|money }}</td><td><b>{{ item.new_price|money }}</b></td><td><span class="badge">{{ item.source }}</span></td><td>{{ item.reason }}</td></tr>{% endfor %}
+  {% if not history %}<tr><td colspan="6" class="muted">Пока нет записей.</td></tr>{% endif %}
+  </tbody></table></div>
 </section>
-
-<section class="premium-card">
-  <div class="card-head"><div><p class="eyebrow">Записи</p><h2>Подтверждённая история</h2></div><span class="badge">{{ all_count }}</span></div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Дата</th><th>Товар</th><th>Было</th><th>Стало</th><th>Причина</th></tr></thead>
-      <tbody>
-      {% for h in history %}
-      <tr><td>{{ h.created_at }}</td><td>{{ h.product.name if h.product else h.product_id }}</td><td>{{ h.old_price|money }}</td><td><b>{{ h.new_price|money }}</b></td><td>{{ h.reason }}</td></tr>
-      {% endfor %}
-      {% if not history %}<tr><td colspan="5" class="muted">Пока нет записей.</td></tr>{% endif %}
-      </tbody>
-    </table>
-  </div>
-</section>
+<div class="notice info compact">XML подготовлен сервисом, но окончательную обработку проверяйте в кабинете Kaspi.</div>
 {% endblock %}

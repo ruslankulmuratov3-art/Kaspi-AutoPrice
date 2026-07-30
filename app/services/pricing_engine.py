@@ -1,192 +1,127 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from typing import Any
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.logging import get_logger
-from app.models.alert import Alert, AlertType
-from app.models.competitor import CompetitorOffer
-from app.models.price_history import PriceHistory
 from app.models.product import Product, ProductStatus
 from app.models.pricing_rule import PricingRule, PricingStrategy
-from app.services.kaspi_client import KaspiApiError, KaspiOffer, kaspi_client
+from app.services.competitor_service import CompetitorResult, CompetitorUnavailable, competitor_service
+from app.services.kaspi_client import KaspiOffer
 
-logger = get_logger(__name__)
 
-
-@dataclass
+@dataclass(slots=True)
 class PricingDecision:
     product_id: int
     old_price: float
     suggested_price: float
     reason: str
     can_apply: bool
+    status: str = 'unchanged'
+    competitor_price: float | None = None
+    data_source: str = ''
+    cache_state: str = ''
+    details: dict[str, Any] | None = None
 
 
 class PricingEngine:
     def clean_offers(self, product: Product, rule: PricingRule | None, offers: list[KaspiOffer]) -> list[KaspiOffer]:
-        ignore = set()
-        if rule and rule.ignore_sellers:
-            ignore = {x.strip().lower() for x in rule.ignore_sellers.split(',') if x.strip()}
+        ignored = {x.strip().casefold() for x in str(rule.ignore_sellers or '').split(',') if x.strip()} if rule else set()
         if product.store:
-            if product.store.name:
-                ignore.add(product.store.name.strip().lower())
-            if product.store.merchant_id:
-                ignore.add(product.store.merchant_id.strip().lower())
-        if settings.KASPI_COMPANY_NAME:
-            ignore.add(settings.KASPI_COMPANY_NAME.strip().lower())
-        if settings.KASPI_MERCHANT_ID:
-            ignore.add(settings.KASPI_MERCHANT_ID.strip().lower())
-        result: list[KaspiOffer] = []
-        for offer in offers:
-            seller_name = str(offer.seller_name or '').strip().lower()
-            seller_id = str(offer.seller_id or '').strip().lower()
-            if seller_name in ignore or seller_id in ignore:
-                continue
-            result.append(offer)
-        return result
+            ignored.update({str(product.store.name or '').strip().casefold(), str(product.store.merchant_id or '').strip().casefold()})
+        ignored.update({str(settings.KASPI_COMPANY_NAME or '').strip().casefold(), str(settings.KASPI_MERCHANT_ID or '').strip().casefold()})
+        return [o for o in offers if str(o.seller_name or '').strip().casefold() not in ignored and str(o.seller_id or '').strip().casefold() not in ignored and float(o.price or 0) > 0]
 
-    def decide(self, product: Product, offers: list[KaspiOffer], rule: PricingRule | None) -> PricingDecision:
+    def decide(self, product: Product, offers: list[KaspiOffer], rule: PricingRule | None, *, source: str = '', cache_state: str = '') -> PricingDecision:
         old_price = float(product.current_price or 0)
+        base = {'data_source': source, 'cache_state': cache_state}
         if product.status != ProductStatus.ACTIVE or not product.auto_pricing_enabled:
-            return PricingDecision(product.id, old_price, old_price, 'Товар отключён от автоценообразования', False)
+            return PricingDecision(product.id, old_price, old_price, 'Автопрайс выключен', False, 'safe_skipped', details=base)
         if not rule or not rule.is_enabled or rule.strategy == PricingStrategy.MANUAL:
-            return PricingDecision(product.id, old_price, old_price, 'Правило выключено или ручной режим', False)
-        offers = self.clean_offers(product, rule, offers)
-        if not offers:
-            return PricingDecision(product.id, old_price, old_price, 'Нет предложений конкурентов', False)
-        min_competitor = min(offer.price for offer in offers)
-        candidate = old_price
-        reason = 'Без изменения'
-        if rule.strategy == PricingStrategy.MATCH_MIN:
-            candidate = min_competitor
-            reason = f'Сравняли с минимальной ценой конкурента {min_competitor:.0f}'
-        elif rule.strategy == PricingStrategy.BEAT_BY_STEP:
-            candidate = min_competitor - float(rule.beat_step or 0)
-            reason = f'Сделали ниже минимального конкурента на {float(rule.beat_step or 0):.0f}'
-        elif rule.strategy == PricingStrategy.TOP_3_AVERAGE:
-            top = sorted(offer.price for offer in offers)[:3]
-            candidate = sum(top) / len(top)
-            reason = 'Взяли среднюю цену топ-3 конкурентов'
-        elif rule.strategy == PricingStrategy.MARGIN_PROTECT:
-            min_margin_price = float(product.cost_price or 0) * (1 + float(rule.min_margin_percent or 0) / 100)
-            candidate = max(min_competitor - float(rule.beat_step or 0), min_margin_price)
-            reason = f'Цена с защитой маржи {float(rule.min_margin_percent or 0):.1f}%'
+            return PricingDecision(product.id, old_price, old_price, 'Ручной режим', False, 'safe_skipped', details=base)
+        clean = self.clean_offers(product, rule, offers)
+        if not clean:
+            return PricingDecision(product.id, old_price, old_price, 'Конкуренты не найдены. Цена оставлена без изменений', False, 'safe_skipped', details=base)
 
-        candidate = max(candidate, float(product.min_price or 0))
-        if product.max_price and product.max_price > 0:
-            candidate = min(candidate, float(product.max_price))
-        candidate = round(candidate, 0)
+        competitor_price = min(float(o.price) for o in clean)
+        candidate = old_price
+        reason = 'Цена уже оптимальная'
+        if rule.strategy == PricingStrategy.MATCH_MIN:
+            candidate = competitor_price
+            reason = f'Цена равна конкуренту {competitor_price:.0f} ₸'
+        elif rule.strategy == PricingStrategy.BEAT_BY_STEP:
+            step = max(0.0, float(rule.beat_step or 0))
+            candidate = competitor_price - step
+            reason = f'Ниже конкурента на {step:.0f} ₸'
+        elif rule.strategy == PricingStrategy.TOP_3_AVERAGE:
+            top = sorted(float(o.price) for o in clean)[:3]
+            candidate = sum(top) / len(top)
+            reason = 'Средняя цена топ-3 конкурентов'
+        elif rule.strategy == PricingStrategy.MARGIN_PROTECT:
+            step = max(0.0, float(rule.beat_step or 0))
+            candidate = competitor_price - step
+            reason = f'Ниже конкурента на {step:.0f} ₸ с защитой маржи'
+
+        floors = [float(product.min_price or 0)]
+        cost = float(product.cost_price or 0)
+        margin = max(0.0, float(rule.min_margin_percent or 0))
+        if cost > 0:
+            floors.append(cost * (1 + margin / 100))
+        floor = max(floors)
+        if candidate < floor:
+            candidate = floor
+            reason = 'Ограничено минимальной ценой и маржой'
+
+        ceiling = float(product.max_price or 0)
+        if ceiling > 0 and candidate > ceiling:
+            candidate = ceiling
+            reason = 'Ограничено максимальной ценой'
+
+        candidate = float(round(candidate))
+        if candidate <= 0:
+            return PricingDecision(product.id, old_price, old_price, 'Некорректная рассчитанная цена', False, 'error', competitor_price, source, cache_state, base)
+
         if old_price > 0:
             change_percent = abs(candidate - old_price) / old_price * 100
-            max_change = min(float(rule.max_change_percent_per_run or 0), float(settings.MAX_PRICE_CHANGE_PERCENT or 30))
+            max_change = min(max(0.0, float(rule.max_change_percent_per_run or 0)), max(0.0, float(settings.MAX_PRICE_CHANGE_PERCENT or 30)))
             if max_change > 0 and change_percent > max_change:
-                return PricingDecision(product.id, old_price, old_price, f'Слишком большое изменение {change_percent:.1f}%, нужно ручное подтверждение', False)
+                return PricingDecision(product.id, old_price, old_price, f'Изменение {change_percent:.1f}% выше лимита {max_change:.1f}%', False, 'safe_skipped', competitor_price, source, cache_state, {**base, 'change_percent': change_percent})
+
         if candidate == old_price:
-            return PricingDecision(product.id, old_price, old_price, 'Цена уже оптимальная', False)
-        return PricingDecision(product.id, old_price, candidate, reason, True)
-
-    def _rows_to_offers(self, rows: list[CompetitorOffer]) -> list[KaspiOffer]:
-        return [KaspiOffer(r.seller_name, r.seller_id, float(r.price or 0), int(r.delivery_days or 0), int(r.position or 0)) for r in rows]
-
-    def _all_cached_offers(self, db: Session, product: Product) -> list[KaspiOffer] | None:
-        rows = db.query(CompetitorOffer).filter(CompetitorOffer.product_id == product.id).order_by(CompetitorOffer.price.asc()).all()
-        if not rows:
-            return None
-        return self._rows_to_offers(rows)
-
-    def _cached_offers(self, db: Session, product: Product) -> list[KaspiOffer] | None:
-        cache_minutes = int(getattr(settings, 'KASPI_COMPETITOR_CACHE_MINUTES', 360) or 0)
-        if cache_minutes <= 0:
-            return None
-        checked_at = getattr(product, 'last_competitor_checked_at', None)
-        if not checked_at:
-            return None
-        try:
-            if datetime.utcnow() - checked_at > timedelta(minutes=cache_minutes):
-                return None
-        except Exception:
-            return None
-        return self._all_cached_offers(db, product)
+            return PricingDecision(product.id, old_price, old_price, 'Цена уже оптимальная', False, 'unchanged', competitor_price, source, cache_state, base)
+        if cache_state in ('stale', 'fresh') and source:
+            reason += ' · использован кэш'
+        return PricingDecision(product.id, old_price, candidate, reason, True, 'changed', competitor_price, source, cache_state, base)
 
     async def refresh_competitors(self, db: Session, product: Product, *, force: bool = False) -> list[KaspiOffer]:
-        if not force:
-            cached = self._cached_offers(db, product)
-            if cached is not None:
-                return cached
-        try:
-            offers = await kaspi_client.get_product_offers(product, product.store)
-        except KaspiApiError as exc:
-            cached_any = self._all_cached_offers(db, product)
-            if cached_any and bool(getattr(settings, 'KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR', True)):
-                product.last_autopilot_error = f'Конкуренты Kaspi недоступны ({str(exc)[:250]}). Использован последний сохранённый кэш.'
-                db.add(product)
-                db.commit()
-                return cached_any
-            product.last_autopilot_error = f'Конкуренты временно недоступны. Цена оставлена без изменений. {str(exc)[:600]}'
-            db.add(product)
-            db.commit()
-            raise
-        db.query(CompetitorOffer).filter(CompetitorOffer.product_id == product.id).delete()
-        min_price = 0.0
-        for offer in offers:
-            min_price = min(min_price or offer.price, offer.price)
-            db.add(CompetitorOffer(
-                product_id=product.id,
-                seller_name=offer.seller_name,
-                seller_id=offer.seller_id,
-                price=offer.price,
-                delivery_days=offer.delivery_days,
-                position=offer.position,
-            ))
-        product.last_competitor_checked_at = datetime.utcnow()
-        product.last_competitor_price = float(min_price or 0)
-        product.last_autopilot_error = ''
-        db.add(product)
-        db.commit()
-        return offers
+        result = await competitor_service.get(db, product, force=force)
+        return result.offers
 
     async def preview_product(self, db: Session, product: Product, *, force_refresh: bool = False) -> PricingDecision:
+        old_price = float(product.current_price or 0)
         try:
-            offers = await self.refresh_competitors(db, product, force=force_refresh)
-        except KaspiApiError as exc:
-            old_price = float(product.current_price or 0)
-            product.last_autopilot_error = str(exc)[:1000]
+            result: CompetitorResult = await competitor_service.get(db, product, force=force_refresh)
+        except CompetitorUnavailable as exc:
+            product.last_autopilot_error = str(exc)[:500]
             db.add(product)
             db.commit()
-            return PricingDecision(product.id, old_price, old_price, f'Kaspi: {exc}', False)
-        return self.decide(product, offers, product.pricing_rule)
+            return PricingDecision(product.id, old_price, old_price, str(exc), False, 'safe_skipped', data_source='unavailable', details={'cooldown_until': exc.cooldown_until.isoformat(timespec='seconds') if exc.cooldown_until else None, 'http_status': exc.http_status})
+        decision = self.decide(product, result.offers, product.pricing_rule, source=result.source, cache_state=result.cache_state)
+        if result.error:
+            decision.details = {**(decision.details or {}), 'source_error': result.error}
+        product.last_autopilot_error = '' if decision.status != 'error' else decision.reason
+        db.add(product)
+        db.commit()
+        return decision
 
     async def push_current_price(self, db: Session, product: Product) -> PricingDecision:
         old_price = float(product.current_price or 0)
-        if old_price <= 0:
-            return PricingDecision(product.id, old_price, old_price, 'Текущая цена должна быть больше 0', False)
-        try:
-            ok = await kaspi_client.update_price(product, product.store, old_price)
-        except KaspiApiError as exc:
-            return PricingDecision(product.id, old_price, old_price, f'Kaspi API: {exc}', False)
-        if ok:
-            db.add(PriceHistory(product_id=product.id, old_price=old_price, new_price=old_price, reason='Прямой API-запрос Kaspi подтверждён', source='api_confirmed'))
-            db.add(Alert(title='Цена отправлена в Kaspi', body=f'{product.name}: {old_price:.0f} тг', type=AlertType.SYSTEM))
-            db.commit()
-        return PricingDecision(product.id, old_price, old_price, 'API подтвердил запрос изменения цены', True)
+        return PricingDecision(product.id, old_price, old_price, 'Прямой API цены не подтверждён. Цена будет передана полным XML', False, 'safe_skipped')
 
     async def apply_product(self, db: Session, product: Product) -> PricingDecision:
-        decision = await self.preview_product(db, product)
-        if not decision.can_apply:
-            return decision
-        ok = await kaspi_client.update_price(product, product.store, decision.suggested_price)
-        if ok:
-            old = product.current_price
-            product.current_price = decision.suggested_price
-            db.add(PriceHistory(product_id=product.id, old_price=old, new_price=decision.suggested_price, reason=decision.reason, source='api_confirmed'))
-            db.add(Alert(title='Цена изменена', body=f'{product.name}: {old:.0f} → {decision.suggested_price:.0f} тг', type=AlertType.PRICE_CHANGED))
-            db.add(product)
-            db.commit()
-            db.refresh(product)
-        return decision
+        return await self.preview_product(db, product)
 
 
 pricing_engine = PricingEngine()

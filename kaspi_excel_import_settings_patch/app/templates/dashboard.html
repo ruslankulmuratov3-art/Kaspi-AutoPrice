@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Панель — Kaspi SaaS{% endblock %}
+{% block content %}
+<section class="page-head animate-in">
+  <div>
+    <p class="eyebrow">Главная панель</p>
+    <h1>Контроль цен и конкурентов</h1>
+    <p class="muted">Excel-прайс — это подготовка файла. Реальная история цен появляется только после подтверждения в Kaspi.</p>
+  </div>
+  <a class="btn" href="/api/docs">API Docs</a>
+</section>
+
+<section class="metrics">
+  <div class="metric card"><span>Товары</span><strong>{{ metrics.products }}</strong><small>в базе</small></div>
+  <div class="metric card"><span>Магазины</span><strong>{{ metrics.stores }}</strong><small>подключено</small></div>
+  <div class="metric card"><span>Подготовлено за 24ч</span><strong>{{ metrics.unread_alerts }}</strong><small>уведомления/прайсы</small></div>
+  <div class="metric card"><span>Средняя цена</span><strong>{{ metrics.avg_price|money }}</strong><small>по локальной базе</small></div>
+</section>
+
+<section class="notice info">
+  <b>Важно:</b> блок «Уведомления» показывает, что Excel-файл был подготовлен. Это ещё не значит, что цена уже изменилась в Kaspi. После загрузки файла проверяй статус в кабинете Kaspi → История загрузок.
+</section>
+
+<section class="grid-2">
+  <div class="card">
+    <div class="card-head"><h2>Последние товары</h2><a href="/products">Все</a></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Товар</th><th>Цена в базе</th><th>Статус</th></tr></thead>
+        <tbody>
+        {% for p in products %}<tr><td><a href="/products/{{ p.id }}">{{ p.name }}</a><small>{{ p.kaspi_sku }}</small></td><td>{{ p.current_price|money }}</td><td><span class="badge">{{ p.status.value }}</span></td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Прайс-листы и уведомления</h2><span class="badge hot">{{ metrics.unread_alerts }}</span></div>
+    <div class="feed">
+      {% for a in alerts %}<div class="feed-item"><b>{{ a.title }}</b><p>{{ a.body }}</p><small>{{ a.created_at }}</small></div>{% endfor %}
+      {% if not alerts %}<p class="muted">Пока уведомлений нет.</p>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><div><h2>Подтверждённая история цен</h2><p class="muted">Сюда больше не попадают Excel-черновики. Только реальные/подтверждённые изменения.</p></div><a href="/history">Открыть</a></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Товар</th><th>Старая</th><th>Новая</th><th>Причина</th></tr></thead>
+      <tbody>
+      {% for row in history %}<tr><td>{{ row.product.name if row.product else row.product_id }}</td><td>{{ row.old_price|money }}</td><td>{{ row.new_price|money }}</td><td>{{ row.reason }}</td></tr>{% endfor %}
+      {% if not history %}<tr><td colspan="4" class="muted">Пока нет подтверждённых изменений. Excel-файлы смотри в уведомлениях выше.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

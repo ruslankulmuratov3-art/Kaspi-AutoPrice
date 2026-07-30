@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}История — Kaspi SaaS{% endblock %}
+{% block content %}
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Журнал</p>
+    <h1>Подтверждённая история цен</h1>
+    <p class="muted">Excel-прайс-лист здесь не считается изменением цены. Он показывается в уведомлениях. История ниже — только для реально подтверждённых изменений.</p>
+  </div>
+  <form method="post" action="/history/clear-test" onsubmit="return confirm('Очистить тестовую историю? Товары и Kaspi не трогаются.');">
+    <button class="btn btn-danger">Сбросить тестовую историю</button>
+  </form>
+</section>
+{% if all_count and all_count > 0 and not history %}
+<section class="notice info">В базе были старые тестовые записи истории, но они скрыты, потому что не подтверждены Kaspi. Можно нажать «Сбросить тестовую историю».</section>
+{% endif %}
+<section class="card">
+  <div class="table-wrap"><table><thead><tr><th>Дата</th><th>Товар</th><th>Старая</th><th>Новая</th><th>Источник</th><th>Причина</th></tr></thead><tbody>
+  {% for h in history %}<tr><td>{{ h.created_at }}</td><td>{{ h.product.name if h.product else h.product_id }}</td><td>{{ h.old_price|money }}</td><td>{{ h.new_price|money }}</td><td>{{ h.source }}</td><td>{{ h.reason }}</td></tr>{% endfor %}
+  {% if not history %}<tr><td colspan="6" class="muted">Подтверждённых изменений пока нет. Это нормально: Excel сначала нужно загрузить в Kaspi и дождаться обработки.</td></tr>{% endif %}
+  </tbody></table></div>
+</section>
+{% endblock %}

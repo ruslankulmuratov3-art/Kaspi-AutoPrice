@@ -1,9 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from dataclasses import asdict
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.product import Product
+from app.models.store import Store
 from app.models.user import User
+from app.services.autopilot_service import autopilot_service
 from app.services.pricing_engine import pricing_engine
 
 router = APIRouter()
@@ -14,31 +19,22 @@ async def preview_price(product_id: int, db: Session = Depends(get_db), user: Us
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(404, 'Product not found')
-    decision = await pricing_engine.preview_product(db, product)
-    return decision.__dict__
+    return asdict(await pricing_engine.preview_product(db, product))
 
 
 @router.post('/apply/{product_id}')
-async def apply_price(product_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def apply_price(product_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(404, 'Product not found')
-    decision = await pricing_engine.apply_product(db, product)
-    return decision.__dict__
+    job = autopilot_service.enqueue(db, product.store_id, mode='single', query_filter=product.kaspi_sku, requested_limit=1)
+    return {'status': 'queued', 'job_id': job.id, 'message': 'Цена будет подготовлена в полном XML. Прямой API не используется.'}
 
 
 @router.post('/run-all')
-async def run_all(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    products = db.query(Product).all()
-    result = {'checked': 0, 'changed': 0, 'skipped': 0, 'errors': 0}
-    for product in products:
-        try:
-            decision = await pricing_engine.apply_product(db, product)
-            result['checked'] += 1
-            if decision.can_apply:
-                result['changed'] += 1
-            else:
-                result['skipped'] += 1
-        except Exception:
-            result['errors'] += 1
-    return result
+def run_all(store_id: int = Query(..., ge=1), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(404, 'Store not found')
+    job = autopilot_service.enqueue(db, store.id, mode='api_run_all')
+    return {'status': 'queued', 'job_id': job.id, 'store_id': store.id}

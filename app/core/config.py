@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_NAME: str = 'Kaspi Price Manager Pro'
-    APP_VERSION: str = '2.0.0'
+    APP_VERSION: str = '3.0.0'
     ENVIRONMENT: str = 'local'
     DEBUG: bool = True
     ENABLE_DOCS: bool = True
@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     KASPI_PUBLIC_CITY_ID: str = '750000000'  # Алматы
     KASPI_PUBLIC_OFFERS_LIMIT: int = 10
     KASPI_PUBLIC_SORT_OPTION: str = 'PRICE'
+    KASPI_PUBLIC_OFFERS_METHOD: str = 'POST'  # POST был рабочим форматом витрины; меняется только через env
+    KASPI_PUBLIC_OFFERS_COOLDOWN_MINUTES: int = 60
+    KASPI_PUBLIC_OFFERS_MAX_COOLDOWN_MINUTES: int = 720
+    KASPI_PUBLIC_OFFERS_FAILURE_THRESHOLD: int = 2
+    KASPI_PUBLIC_OFFERS_BACKOFF_BASE_SECONDS: float = 2.0
+    KASPI_PUBLIC_OFFERS_BACKOFF_MAX_SECONDS: float = 30.0
+    KASPI_PUBLIC_OFFERS_JITTER_SECONDS: float = 1.5
+    KASPI_PUBLIC_OFFERS_REQUESTS_PER_MINUTE: int = 6
+    KASPI_PUBLIC_OFFERS_HTML_MAX_CHARS: int = 240
     # Если у тебя появится официальный/партнёрский endpoint офферов, можно указать его здесь.
     KASPI_OFFERS_URL_TEMPLATE: str = ''
     PRICE_CHECK_INTERVAL_MINUTES: int = 15
@@ -66,9 +75,10 @@ class Settings(BaseSettings):
     KASPI_AUTOPILOT_WAREHOUSE_ID: str = 'PP1'
     KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE: bool = True
     KASPI_AUTOPILOT_DELAY_SECONDS: float = 5.0
-    KASPI_XML_REBUILD_ON_PULL: bool = True
+    KASPI_XML_REBUILD_ON_PULL: bool = False  # запрос Kaspi никогда не запускает тяжёлый расчёт
     KASPI_XML_STALE_AFTER_MINUTES: int = 25
     KASPI_COMPETITOR_CACHE_MINUTES: int = 360
+    KASPI_COMPETITOR_STALE_CACHE_MINUTES: int = 4320
     KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR: bool = True
     KASPI_AUTOPILOT_CONCURRENCY: int = 1
     KASPI_AUTOPILOT_ONLY_IN_STOCK: bool = True
@@ -81,6 +91,19 @@ class Settings(BaseSettings):
     KASPI_PRICE_CHANGE_SAFETY_RESERVE: int = 10
 
     KASPI_DEFAULT_STORE_AUTO_CREATE: bool = True
+
+    # Публичный адрес Render/VPS. На production используется вместо 127.0.0.1.
+    PUBLIC_BASE_URL: str = ''
+
+    # Защита XML: новая версия публикуется только как полный безопасный каталог.
+    KASPI_XML_MIN_PRODUCT_RATIO: float = 0.95
+    KASPI_XML_MAX_DROP_RATIO: float = 0.10
+    KASPI_XML_KEEP_VERSIONS: int = 100
+
+    # Устойчивые задания автопилота.
+    KASPI_AUTOPILOT_HEARTBEAT_TIMEOUT_MINUTES: int = 15
+    KASPI_AUTOPILOT_POLL_SECONDS: int = 3
+    KASPI_AUTOPILOT_BATCH_SIZE: int = 25
 
     SMTP_HOST: str = ''
     SMTP_PORT: int = 587

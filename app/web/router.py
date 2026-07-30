@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFil
 from urllib.parse import quote
 from pathlib import Path
 from io import BytesIO
-from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse, FileResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse, FileResponse, JSONResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,8 @@ from app.services.generated_price_list_service import generated_price_list_servi
 from app.services.xml_feed_service import xml_feed_service, XmlFeedError
 from app.services.autopilot_service import autopilot_service
 from app.services.price_change_limiter import price_change_limiter
+from app.services.competitor_service import competitor_service
+from app.services.search_service import product_text_matches
 from app.web.templating import templates
 from app.web.deps import current_user_optional
 
@@ -63,26 +65,6 @@ def is_pending_product(product: Product) -> bool:
         or (float(product.max_price or 0) < float(product.min_price or 0) and float(product.max_price or 0) > 0)
     )
 
-
-def product_text_matches(product: Product, needle: str) -> bool:
-    """Надёжный поиск по названию, SKU и ссылке.
-
-    SQLite может плохо делать регистронезависимый поиск по кириллице,
-    поэтому финальный фильтр делаем в Python через casefold().
-    """
-    needle = ' '.join(str(needle or '').casefold().split())
-    if not needle:
-        return True
-    haystack = ' '.join([
-        str(product.name or ''),
-        str(product.kaspi_sku or ''),
-        str(product.url or ''),
-        str(getattr(product, 'product_id', '') or ''),
-        str(getattr(product, 'model', '') or ''),
-        str(getattr(product, 'brand', '') or ''),
-        str(getattr(product, 'category', '') or ''),
-    ]).casefold()
-    return needle in haystack
 
 
 @web_router.get('/', response_class=HTMLResponse)
@@ -434,8 +416,8 @@ def product_detail(request: Request, product_id: int, db: Session = Depends(get_
         db.add(PricingRule(product_id=product.id))
         db.commit()
         db.refresh(product)
-    confirmed_sources = ['kaspi_confirmed', 'price_list_confirmed']
-    confirmed_history = db.query(PriceHistory).filter(PriceHistory.product_id == product.id, PriceHistory.source.in_(confirmed_sources)).order_by(PriceHistory.created_at.desc()).limit(10).all()
+    visible_sources = ['kaspi_confirmed', 'price_list_confirmed', 'xml_prepared', 'manual']
+    confirmed_history = db.query(PriceHistory).filter(PriceHistory.product_id == product.id, PriceHistory.source.in_(visible_sources)).order_by(PriceHistory.created_at.desc()).limit(20).all()
     return templates.TemplateResponse('product_detail.html', {'request': request, 'user': user, 'product': product, 'confirmed_history': confirmed_history, 'strategies': PricingStrategy, 'message': request.query_params.get('message', ''), 'error': request.query_params.get('error', '')})
 
 
@@ -711,24 +693,21 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
         return login_redirect()
     stores = db.query(Store).order_by(Store.name.asc()).all()
     selected_store_id = store_id or (stores[0].id if stores else None)
-    selected_store = next((s for s in stores if s.id == selected_store_id), None) if selected_store_id else None
+    selected_store = next((store for store in stores if store.id == selected_store_id), None) if selected_store_id else None
     feed_record = xml_feed_service.get_record(selected_store_id) if selected_store_id else None
     feed_versions = xml_feed_service.list_versions(selected_store_id, limit=8) if selected_store_id else []
     feed_pulls = xml_feed_service.list_pulls(selected_store_id, limit=8) if selected_store_id else []
     autopilot_status = autopilot_service.last_status(selected_store_id) if selected_store_id else None
+    latest_job = autopilot_service.latest_job(db, selected_store_id) if selected_store_id else None
     price_change_budget = price_change_limiter.usage(db, selected_store_id) if selected_store_id else price_change_limiter.usage(db, None)
+    competitor_state = competitor_service.state_info(db)
     ready_count = 0
+    active_count = 0
     if selected_store_id:
-        ready_count = db.query(Product).filter(
-            Product.store_id == selected_store_id,
-            Product.auto_pricing_enabled == True,
-            Product.status == ProductStatus.ACTIVE,
-            Product.min_price > 0,
-            Product.max_price > 0,
-        ).count()
-    base_url = str(request.base_url).rstrip('/')
-    feed_url = f'{base_url}/kaspi-feed/{selected_store_id}.xml' if selected_store_id else ''
-    android_url = f'{base_url}/android'
+        ready_count = db.query(Product).filter(Product.store_id == selected_store_id, Product.auto_pricing_enabled == True, Product.status == ProductStatus.ACTIVE, Product.min_price > 0, Product.max_price > 0).count()
+        active_count = db.query(Product).filter(Product.store_id == selected_store_id, Product.status == ProductStatus.ACTIVE, Product.current_price > 0).count()
+    public_base = settings.PUBLIC_BASE_URL.strip().rstrip('/') or str(request.base_url).rstrip('/')
+    feed_url = f'{public_base}/kaspi-feed/{selected_store_id}.xml' if selected_store_id else ''
     return templates.TemplateResponse('automation.html', {
         'request': request,
         'user': user,
@@ -739,44 +718,37 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
         'feed_versions': feed_versions,
         'feed_pulls': feed_pulls,
         'autopilot_status': autopilot_status,
+        'latest_job': latest_job,
         'price_change_budget': price_change_budget,
+        'competitor_state': competitor_state,
         'ready_count': ready_count,
+        'active_count': active_count,
         'feed_url': feed_url,
-        'android_url': android_url,
         'message': request.query_params.get('message', ''),
         'error': request.query_params.get('error', ''),
     })
 
 
+@web_router.get('/automation/status')
+def automation_status_page(request: Request, store_id: int, db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
+    return JSONResponse({
+        'job': autopilot_service.last_status(store_id),
+        'budget': price_change_limiter.usage(db, store_id),
+        'competitors': competitor_service.state_info(db),
+        'feed': xml_feed_service.get_record(store_id),
+    })
+
 
 @web_router.post('/automation/run-now')
-async def autopilot_run_now_page(
-    request: Request,
-    store_id: int = Form(...),
-    warehouse_id: str = Form(''),
-    db: Session = Depends(get_db),
-):
+def autopilot_run_now_page(request: Request, store_id: int = Form(...), warehouse_id: str = Form(''), limit_count: int = Form(0), q_filter: str = Form(''), db: Session = Depends(get_db)):
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
-    try:
-        result = await autopilot_service.rebuild_store_feed(
-            db,
-            store_id,
-            reason='manual_autopilot_button',
-            warehouse_id=warehouse_id,
-            limit_count=0,
-            q_filter='',
-        )
-        if not result.get('ok'):
-            return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(result.get('message') or result.get('error') or 'Автопилот занят'), status_code=303)
-        msg = (
-            f'Автопилот обновил XML: товаров {result["processed"]}, новых цен {result["changed"]}, '
-            f'в очереди {result.get("queued", 0)}, без изменений {result["skipped"]}, ошибок {result["errors"]}.'
-        )
-        return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(msg), status_code=303)
-    except Exception as exc:
-        return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
+    job = autopilot_service.enqueue(db, store_id, mode='manual', query_filter=q_filter, requested_limit=limit_count, warehouse_id=warehouse_id)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(f'Задание №{job.id} поставлено в очередь.'), status_code=303)
 
 
 @web_router.post('/automation/stop')
@@ -785,66 +757,37 @@ def autopilot_stop_page(request: Request, store_id: int = Form(...), db: Session
     if not user:
         return login_redirect()
     autopilot_service.request_stop(store_id)
-    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote('Автопилот остановится после текущего товара.'), status_code=303)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote('Остановка запрошена. Текущий товар завершится безопасно.'), status_code=303)
 
-@web_router.post('/automation/rebuild-xml')
-async def rebuild_xml_feed_page(
-    request: Request,
-    store_id: int = Form(...),
-    warehouse_id: str = Form(''),
-    limit_count: int = Form(0),
-    q_filter: str = Form(''),
-    db: Session = Depends(get_db),
-):
+
+@web_router.post('/automation/resume')
+def autopilot_resume_page(request: Request, job_id: int = Form(...), store_id: int = Form(...), db: Session = Depends(get_db)):
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
-    try:
-        result = await autopilot_service.rebuild_store_feed(
-            db,
-            store_id,
-            reason='manual_xml_rebuild',
-            warehouse_id=warehouse_id,
-            limit_count=limit_count,
-            q_filter=q_filter,
-        )
-        if not result.get('ok'):
-            return RedirectResponse(
-                f'/automation?store_id={store_id}&error=' + quote(result.get('message') or result.get('error') or 'Не удалось пересобрать XML'),
-                status_code=303,
-            )
-        message = (
-            f'XML готов: товаров {result.get("processed", 0)}, новых цен {result.get("changed", 0)}, '
-            f'в очереди {result.get("queued", 0)}, ошибок {result.get("errors", 0)}.'
-        )
-        return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(message), status_code=303)
-    except Exception as exc:
-        return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
+    job = autopilot_service.resume(db, job_id)
+    if not job:
+        return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote('Задание не найдено.'), status_code=303)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(f'Задание №{job.id} продолжено.'), status_code=303)
+
+
+@web_router.post('/automation/rebuild-xml')
+def rebuild_xml_feed_page(request: Request, store_id: int = Form(...), warehouse_id: str = Form(''), limit_count: int = Form(0), q_filter: str = Form(''), db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    job = autopilot_service.enqueue(db, store_id, mode='manual_xml', query_filter=q_filter, requested_limit=limit_count, warehouse_id=warehouse_id)
+    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(f'Пересборка XML поставлена в очередь: №{job.id}.'), status_code=303)
 
 
 @web_router.get('/kaspi-feed/{store_id}.xml')
-async def kaspi_xml_feed(request: Request, store_id: int, db: Session = Depends(get_db)):
-    # Когда Kaspi открывает XML-ссылку, мы можем сначала пересобрать XML, если он устарел.
-    # Это делает схему почти полностью автоматической: один раз импортировали ACTIVE.xlsx,
-    # дальше Kaspi каждый час забирает свежий XML.
-    try:
-        await autopilot_service.rebuild_store_if_stale(db, store_id, reason='kaspi_pull_refresh')
-    except Exception as exc:
-        db.add(Alert(title='XML автопилот не смог обновить файл перед отдачей', body=str(exc)[:500], type=AlertType.API_ERROR))
-        db.commit()
-    # Логируем любое открытие XML: это может быть Kaspi, браузер, проверка вручную или мониторинг.
-    # Это не подтверждение применения цен в Kaspi, а факт запроса нашего XML-файла.
-    xml_feed_service.log_pull(store_id, request)
+def kaspi_xml_feed(request: Request, store_id: int):
     xml_text = xml_feed_service.get_xml_text(store_id)
     if not xml_text:
-        # Важно: не отдаём пустой <offers/>. Пустой прайс может быть опаснее ошибки,
-        # потому что маркетплейс может принять его как отсутствие товаров.
-        return Response(
-            '<?xml version="1.0" encoding="utf-8"?><error>XML ещё не создан. Сначала импортируй ACTIVE.xlsx и собери XML.</error>',
-            media_type='application/xml',
-            status_code=503,
-        )
-    return Response(xml_text, media_type='application/xml', headers={'Content-Disposition': f'inline; filename="kaspi_store_{store_id}.xml"'})
+        xml_feed_service.log_pull(store_id, request, response_status=503)
+        return Response('<?xml version="1.0" encoding="utf-8"?><error>XML ещё не создан.</error>', media_type='application/xml', status_code=503)
+    xml_feed_service.log_pull(store_id, request, response_status=200)
+    return Response(xml_text, media_type='application/xml', headers={'Content-Disposition': f'inline; filename="kaspi_store_{store_id}.xml"', 'Cache-Control': 'no-cache, no-store, must-revalidate'})
 
 
 @web_router.get('/xml-history', response_class=HTMLResponse)
@@ -854,29 +797,44 @@ def xml_history_page(request: Request, store_id: int | None = None, feed_id: str
         return login_redirect()
     stores = db.query(Store).order_by(Store.name.asc()).all()
     selected_store_id = store_id or (stores[0].id if stores else None)
-    selected_store = next((s for s in stores if s.id == selected_store_id), None) if selected_store_id else None
+    selected_store = next((store for store in stores if store.id == selected_store_id), None) if selected_store_id else None
     versions = xml_feed_service.list_versions(selected_store_id, limit=50) if selected_store_id else []
     pulls = xml_feed_service.list_pulls(selected_store_id, limit=100) if selected_store_id else []
     selected_feed_id = feed_id or (versions[0].get('feed_id') if versions else None)
     selected_version = xml_feed_service.get_version(selected_store_id, selected_feed_id) if selected_feed_id else None
     details = (selected_version or {}).get('details', [])
-    base_url = str(request.base_url).rstrip('/')
-    feed_url = f'{base_url}/kaspi-feed/{selected_store_id}.xml' if selected_store_id else ''
+    public_base = settings.PUBLIC_BASE_URL.strip().rstrip('/') or str(request.base_url).rstrip('/')
+    feed_url = f'{public_base}/kaspi-feed/{selected_store_id}.xml' if selected_store_id else ''
     return templates.TemplateResponse('xml_history.html', {
-        'request': request,
-        'user': user,
-        'stores': stores,
-        'selected_store_id': selected_store_id,
-        'selected_store': selected_store,
-        'versions': versions,
-        'pulls': pulls,
-        'selected_version': selected_version,
-        'selected_feed_id': selected_feed_id,
-        'details': details,
-        'feed_url': feed_url,
-        'message': request.query_params.get('message', ''),
-        'error': request.query_params.get('error', ''),
+        'request': request, 'user': user, 'stores': stores, 'selected_store_id': selected_store_id,
+        'selected_store': selected_store, 'versions': versions, 'pulls': pulls,
+        'selected_version': selected_version, 'selected_feed_id': selected_feed_id,
+        'details': details, 'feed_url': feed_url,
+        'message': request.query_params.get('message', ''), 'error': request.query_params.get('error', ''),
     })
+
+
+@web_router.get('/xml-history/download/{store_id}/{feed_id}')
+def xml_history_download(request: Request, store_id: int, feed_id: str, db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    version = xml_feed_service.get_version(store_id, feed_id)
+    if not version:
+        return RedirectResponse(f'/xml-history?store_id={store_id}&error=' + quote('Версия XML не найдена.'), status_code=303)
+    return Response(version['xml_text'], media_type='application/xml', headers={'Content-Disposition': f'attachment; filename="kaspi_store_{store_id}_{feed_id}.xml"'})
+
+
+@web_router.post('/xml-history/activate')
+def xml_history_activate(request: Request, store_id: int = Form(...), feed_id: str = Form(...), db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    try:
+        xml_feed_service.activate_version(store_id, feed_id)
+        return RedirectResponse(f'/xml-history?store_id={store_id}&feed_id={feed_id}&message=' + quote('Версия XML стала активной.'), status_code=303)
+    except XmlFeedError as exc:
+        return RedirectResponse(f'/xml-history?store_id={store_id}&error=' + quote(str(exc)), status_code=303)
 
 
 @web_router.get('/android', response_class=HTMLResponse)
@@ -899,8 +857,8 @@ def history_page(request: Request, db: Session = Depends(get_db)):
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
-    confirmed_sources = ['kaspi_confirmed', 'price_list_confirmed']
-    history = db.query(PriceHistory).filter(PriceHistory.source.in_(confirmed_sources)).order_by(PriceHistory.created_at.desc()).limit(300).all()
+    visible_sources = ['kaspi_confirmed', 'price_list_confirmed', 'xml_prepared', 'manual']
+    history = db.query(PriceHistory).filter(PriceHistory.source.in_(visible_sources)).order_by(PriceHistory.created_at.desc()).limit(500).all()
     all_count = db.query(PriceHistory).count()
     return templates.TemplateResponse('history.html', {'request': request, 'user': user, 'history': history, 'all_count': all_count, 'message': request.query_params.get('message', '')})
 
@@ -910,7 +868,7 @@ def clear_test_history_page(request: Request, db: Session = Depends(get_db)):
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
-    deleted = db.query(PriceHistory).delete()
+    deleted = db.query(PriceHistory).filter(PriceHistory.source.in_(['test', 'auto', 'xml_autopilot_prepared'])).delete(synchronize_session=False)
     db.add(Alert(title='Тестовая история очищена', body=f'Удалено записей истории цен: {deleted}. Это не трогает товары и Excel-файлы.', type=AlertType.SYSTEM))
     db.commit()
     return RedirectResponse('/history?message=' + quote('Тестовая история очищена. Товары и цены в Kaspi не трогались.'), status_code=303)

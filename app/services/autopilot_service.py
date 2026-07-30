@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -10,37 +11,36 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models.alert import Alert, AlertType
+from app.models.autopilot import AutopilotJob, AutopilotJobItem, AutopilotJobStatus
 from app.models.price_history import PriceHistory
 from app.models.product import Product, ProductStatus
 from app.models.store import Store
-from app.services.pricing_engine import pricing_engine
+from app.services.competitor_service import competitor_service
 from app.services.price_change_limiter import price_change_limiter
+from app.services.pricing_engine import PricingDecision, pricing_engine
 from app.services.xml_feed_service import XmlFeedError, xml_feed_service
 
 logger = get_logger(__name__)
 
 
 class AutoPilotService:
-    """Background XML autopilot.
+    """Persistent database-backed XML autopilot.
 
-    One ACTIVE.xlsx import saves products to DB. Afterwards the autopilot recalculates prices,
-    rebuilds XML, saves XML history, and Kaspi pulls /kaspi-feed/{store_id}.xml.
+    The web process only claims jobs from PostgreSQL. Job progress, stop requests and resume
+    cursor survive a Render restart. XML is activated only after a full catalog validation.
     """
 
     def __init__(self) -> None:
-        self._task: asyncio.Task | None = None
+        self._worker_task: asyncio.Task | None = None
         self._started = False
-        self._locks: dict[int, asyncio.Lock] = {}
-        self._last_status: dict[int, dict[str, Any]] = {}
-        self._stop_flags: set[int] = set()
+        self._wake = asyncio.Event()
+        self._local_store_locks: dict[int, asyncio.Lock] = {}
 
     def enabled(self) -> bool:
-        return bool(getattr(settings, 'KASPI_AUTOPILOT_ENABLED', True))
+        return bool(settings.KASPI_AUTOPILOT_ENABLED)
 
-    def _lock_for(self, store_id: int) -> asyncio.Lock:
-        if store_id not in self._locks:
-            self._locks[store_id] = asyncio.Lock()
-        return self._locks[store_id]
+    def _lock(self, store_id: int) -> asyncio.Lock:
+        return self._local_store_locks.setdefault(int(store_id), asyncio.Lock())
 
     def start(self) -> None:
         if self._started or not self.enabled():
@@ -48,411 +48,440 @@ class AutoPilotService:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            logger.warning('Autopilot: event loop is not ready, background mode skipped')
             return
         self._started = True
-        self._task = loop.create_task(self._run_loop())
-        logger.info('Kaspi XML autopilot started')
+        self._recover_stale_jobs()
+        self._worker_task = loop.create_task(self._worker_loop())
+        logger.info('Persistent autopilot worker started')
 
     async def stop(self) -> None:
-        if self._task and not self._task.done():
-            self._task.cancel()
+        if self._worker_task and not self._worker_task.done():
+            self._worker_task.cancel()
             try:
-                await self._task
+                await self._worker_task
             except asyncio.CancelledError:
                 pass
         self._started = False
 
-    def request_stop(self, store_id: int) -> None:
-        self._stop_flags.add(int(store_id))
+    def _recover_stale_jobs(self) -> None:
+        db = SessionLocal()
+        try:
+            cutoff = datetime.utcnow() - timedelta(minutes=max(1, settings.KASPI_AUTOPILOT_HEARTBEAT_TIMEOUT_MINUTES))
+            rows = db.query(AutopilotJob).filter(AutopilotJob.status == AutopilotJobStatus.RUNNING).all()
+            for row in rows:
+                if not row.heartbeat_at or row.heartbeat_at < cutoff:
+                    row.status = AutopilotJobStatus.QUEUED
+                    row.error_message = 'Задание восстановлено после перезапуска.'
+                    db.add(row)
+            db.commit()
+        finally:
+            db.close()
 
-    async def _run_loop(self) -> None:
-        startup_delay = int(getattr(settings, 'KASPI_AUTOPILOT_STARTUP_DELAY_SECONDS', 25) or 25)
-        interval_minutes = int(getattr(settings, 'KASPI_AUTOPILOT_INTERVAL_MINUTES', 60) or 60)
-        interval_seconds = max(300, interval_minutes * 60)
-        await asyncio.sleep(max(1, startup_delay))
+    def enqueue(self, db: Session, store_id: int, *, mode: str = 'all', query_filter: str = '', requested_limit: int = 0, warehouse_id: str = '') -> AutopilotJob:
+        active = db.query(AutopilotJob).filter(AutopilotJob.store_id == int(store_id), AutopilotJob.status.in_([AutopilotJobStatus.QUEUED, AutopilotJobStatus.RUNNING, AutopilotJobStatus.PAUSED])).order_by(AutopilotJob.id.desc()).first()
+        if active and active.status != AutopilotJobStatus.PAUSED:
+            return active
+        job = AutopilotJob(store_id=int(store_id), status=AutopilotJobStatus.QUEUED, mode=mode, query_filter=query_filter.strip(), requested_limit=max(0, int(requested_limit or 0)), warehouse_id=(warehouse_id or settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1').strip())
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        self._wake.set()
+        return job
+
+    def request_stop(self, store_id: int) -> None:
+        db = SessionLocal()
+        try:
+            job = db.query(AutopilotJob).filter(AutopilotJob.store_id == int(store_id), AutopilotJob.status.in_([AutopilotJobStatus.QUEUED, AutopilotJobStatus.RUNNING])).order_by(AutopilotJob.id.desc()).first()
+            if job:
+                job.stop_requested = True
+                db.add(job)
+                db.commit()
+        finally:
+            db.close()
+        self._wake.set()
+
+    def resume(self, db: Session, job_id: int) -> AutopilotJob | None:
+        job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+        if not job or job.status not in (AutopilotJobStatus.PAUSED, AutopilotJobStatus.ERROR, AutopilotJobStatus.CANCELLED):
+            return job
+        job.status = AutopilotJobStatus.QUEUED
+        job.stop_requested = False
+        job.error_message = ''
+        job.finished_at = None
+        db.add(job)
+        db.commit()
+        self._wake.set()
+        return job
+
+    def latest_job(self, db: Session, store_id: int | None) -> AutopilotJob | None:
+        if not store_id:
+            return None
+        return db.query(AutopilotJob).filter(AutopilotJob.store_id == int(store_id)).order_by(AutopilotJob.id.desc()).first()
+
+    def last_status(self, store_id: int | None) -> dict[str, Any] | None:
+        if not store_id:
+            return None
+        db = SessionLocal()
+        try:
+            job = self.latest_job(db, int(store_id))
+            if not job:
+                return None
+            percent = round(job.processed / max(1, job.total) * 100, 1) if job.total else 0
+            return {
+                'job_id': job.id,
+                'running': job.status == AutopilotJobStatus.RUNNING,
+                'status': job.status.value,
+                'processed_now': job.processed,
+                'total': job.total,
+                'percent': percent,
+                'changed': job.changed,
+                'skipped': job.skipped + job.unchanged,
+                'unchanged': job.unchanged,
+                'queued': job.queued_changes,
+                'errors': job.errors,
+                'current_product_id': job.current_product_id,
+                'started_at': job.started_at.isoformat(timespec='seconds') if job.started_at else None,
+                'updated_at': job.updated_at.isoformat(timespec='seconds') if job.updated_at else None,
+                'finished_at': job.finished_at.isoformat(timespec='seconds') if job.finished_at else None,
+                'error': job.error_message,
+            }
+        finally:
+            db.close()
+
+    async def _worker_loop(self) -> None:
+        await asyncio.sleep(max(1, int(settings.KASPI_AUTOPILOT_STARTUP_DELAY_SECONDS or 1)))
+        next_schedule = datetime.utcnow()
         while True:
             try:
-                await self.rebuild_all_stores(reason='background_loop')
+                if datetime.utcnow() >= next_schedule:
+                    self._schedule_due_stores()
+                    next_schedule = datetime.utcnow() + timedelta(minutes=max(5, int(settings.KASPI_AUTOPILOT_INTERVAL_MINUTES or 30)))
+                job_id = self._claim_job()
+                if job_id:
+                    await self._execute_job(job_id)
+                    continue
+                self._wake.clear()
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=max(1, int(settings.KASPI_AUTOPILOT_POLL_SECONDS or 3)))
+                except asyncio.TimeoutError:
+                    pass
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                logger.exception('Autopilot loop failed: %s', exc)
-            await asyncio.sleep(interval_seconds)
+                logger.exception('Autopilot worker loop failed: %s', exc)
+                await asyncio.sleep(3)
 
-    def _parse_dt(self, value: str | None) -> datetime | None:
-        if not value:
-            return None
+    def _schedule_due_stores(self) -> None:
+        if not self.enabled():
+            return
+        db = SessionLocal()
         try:
-            return datetime.fromisoformat(str(value).replace('Z', '+00:00').replace('+00:00', ''))
-        except Exception:
-            return None
+            stores = db.query(Store).filter(Store.is_active == True).all()
+            cutoff = datetime.utcnow() - timedelta(minutes=max(5, int(settings.KASPI_AUTOPILOT_INTERVAL_MINUTES or 30)))
+            for store in stores:
+                active = db.query(AutopilotJob).filter(AutopilotJob.store_id == store.id, AutopilotJob.status.in_([AutopilotJobStatus.QUEUED, AutopilotJobStatus.RUNNING, AutopilotJobStatus.PAUSED])).first()
+                recent = db.query(AutopilotJob).filter(AutopilotJob.store_id == store.id, AutopilotJob.created_at >= cutoff).first()
+                if not active and not recent:
+                    db.add(AutopilotJob(store_id=store.id, status=AutopilotJobStatus.QUEUED, mode='scheduled', warehouse_id=settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1'))
+            db.commit()
+        finally:
+            db.close()
 
-    def is_feed_stale(self, store_id: int, stale_after_minutes: int | None = None) -> bool:
-        record = xml_feed_service.get_record(store_id)
-        if not record:
-            return True
-        updated_at = self._parse_dt(record.get('updated_at'))
-        if not updated_at:
-            return True
-        stale_minutes = stale_after_minutes
-        if stale_minutes is None:
-            stale_minutes = int(getattr(settings, 'KASPI_XML_STALE_AFTER_MINUTES', 55) or 55)
-        age_seconds = (datetime.utcnow() - updated_at).total_seconds()
-        return age_seconds >= max(60, int(stale_minutes) * 60)
+    def _claim_job(self) -> int | None:
+        db = SessionLocal()
+        try:
+            query = db.query(AutopilotJob).filter(AutopilotJob.status == AutopilotJobStatus.QUEUED).order_by(AutopilotJob.id.asc())
+            try:
+                query = query.with_for_update(skip_locked=True)
+            except Exception:
+                pass
+            job = query.first()
+            if not job:
+                return None
+            running = db.query(AutopilotJob).filter(AutopilotJob.store_id == job.store_id, AutopilotJob.status == AutopilotJobStatus.RUNNING, AutopilotJob.id != job.id).first()
+            if running:
+                return None
+            job.status = AutopilotJobStatus.RUNNING
+            job.started_at = job.started_at or datetime.utcnow()
+            job.heartbeat_at = datetime.utcnow()
+            db.add(job)
+            db.commit()
+            return int(job.id)
+        finally:
+            db.close()
+
+    def _product_ids(self, db: Session, job: AutopilotJob) -> list[int]:
+        query = db.query(Product).filter(Product.store_id == job.store_id, Product.auto_pricing_enabled == True, Product.status == ProductStatus.ACTIVE, Product.min_price > 0, Product.max_price > 0)
+        if settings.KASPI_AUTOPILOT_ONLY_IN_STOCK:
+            query = query.filter(Product.stock != 0)
+        if job.cursor_product_id:
+            query = query.filter(Product.id > job.cursor_product_id)
+        rows = query.order_by(Product.id.asc()).limit(max(1, min(job.requested_limit or settings.KASPI_AUTOPILOT_MAX_PRODUCTS_PER_RUN, settings.KASPI_AUTOPILOT_MAX_PRODUCTS_PER_RUN))).all()
+        needle = ' '.join(str(job.query_filter or '').casefold().split())
+        if needle:
+            rows = [p for p in rows if needle in ' '.join([str(p.name or ''), str(p.kaspi_sku or ''), str(p.product_id or ''), str(p.brand or ''), str(p.model or '')]).casefold()]
+        return [int(p.id) for p in rows]
+
+    def _save_job_item(self, db: Session, job: AutopilotJob, item: dict[str, Any]) -> AutopilotJobItem:
+        row = (
+            db.query(AutopilotJobItem)
+            .filter(AutopilotJobItem.job_id == int(job.id), AutopilotJobItem.product_id == int(item['product_id']))
+            .first()
+        )
+        if not row:
+            row = AutopilotJobItem(
+                job_id=int(job.id),
+                store_id=int(job.store_id),
+                product_id=int(item['product_id']),
+            )
+        row.sku = str(item.get('sku') or '')[:255]
+        row.product_name = str(item.get('name') or '')
+        row.old_price = float(item.get('old_price') or 0)
+        row.new_price = float(item.get('new_price') or row.old_price or 0)
+        row.requested_price = float(item['requested_price']) if item.get('requested_price') is not None else None
+        row.competitor_price = float(item['competitor_price']) if item.get('competitor_price') is not None else None
+        row.changed = bool(item.get('changed'))
+        row.status = str(item.get('status') or 'safe_skipped')[:40]
+        row.reason = str(item.get('reason') or '')
+        row.data_source = str(item.get('data_source') or '')[:80]
+        row.cache_state = str(item.get('cache_state') or '')[:40]
+        row.error_message = str(item.get('error_message') or '')[:2000]
+        db.add(row)
+        return row
+
+    def _job_decisions(self, db: Session, job_id: int) -> list[dict[str, Any]]:
+        rows = (
+            db.query(AutopilotJobItem)
+            .filter(AutopilotJobItem.job_id == int(job_id))
+            .order_by(AutopilotJobItem.product_id.asc())
+            .all()
+        )
+        return [
+            {
+                'product_id': int(row.product_id),
+                'sku': row.sku,
+                'name': row.product_name,
+                'old_price': int(round(float(row.old_price or 0))),
+                'new_price': int(round(float(row.new_price or row.old_price or 0))),
+                'requested_price': int(round(float(row.requested_price))) if row.requested_price is not None else None,
+                'competitor_price': float(row.competitor_price) if row.competitor_price is not None else None,
+                'changed': bool(row.changed),
+                'status': row.status,
+                'reason': row.reason,
+                'data_source': row.data_source,
+                'cache_state': row.cache_state,
+                'error_message': row.error_message,
+            }
+            for row in rows
+        ]
+
+    async def _execute_job(self, job_id: int) -> None:
+        db = SessionLocal()
+        try:
+            job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+            if not job:
+                return
+            store_id = int(job.store_id)
+        finally:
+            db.close()
+        async with self._lock(store_id):
+            await self._run_job(job_id)
+
+    async def _run_job(self, job_id: int) -> None:
+        db = SessionLocal()
+        try:
+            job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+            store = db.query(Store).filter(Store.id == job.store_id).first() if job else None
+            if not job or not store:
+                return
+            product_ids = self._product_ids(db, job)
+            job.total = max(int(job.total or 0), int(job.processed or 0) + len(product_ids))
+            job.heartbeat_at = datetime.utcnow()
+            db.add(job)
+            db.commit()
+        finally:
+            db.close()
+
+        for product_id in product_ids:
+            db = SessionLocal()
+            try:
+                job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+                if not job:
+                    return
+                if job.stop_requested:
+                    job.status = AutopilotJobStatus.PAUSED
+                    job.finished_at = datetime.utcnow()
+                    job.error_message = 'Остановлено пользователем. Можно продолжить.'
+                    db.add(job)
+                    db.commit()
+                    return
+                product = db.query(Product).filter(Product.id == int(product_id)).first()
+                if not product:
+                    item = {
+                        'product_id': int(product_id),
+                        'sku': '',
+                        'name': '',
+                        'old_price': 0,
+                        'new_price': 0,
+                        'changed': False,
+                        'status': 'error',
+                        'reason': 'Товар не найден во время обработки.',
+                        'error_message': 'Товар не найден во время обработки.',
+                        'data_source': '',
+                        'cache_state': '',
+                    }
+                    self._save_job_item(db, job, item)
+                    job.errors += 1
+                    job.processed += 1
+                    job.cursor_product_id = int(product_id)
+                    db.add(job)
+                    db.commit()
+                    continue
+                job.current_product_id = product.id
+                job.cursor_product_id = product.id
+                job.heartbeat_at = datetime.utcnow()
+                db.add(job)
+                db.commit()
+
+                decision: PricingDecision = await pricing_engine.preview_product(db, product)
+                item = {
+                    'product_id': product.id,
+                    'sku': product.kaspi_sku,
+                    'name': product.name,
+                    'old_price': int(round(float(product.current_price or 0))),
+                    'new_price': int(round(float(decision.suggested_price or product.current_price or 0))),
+                    'changed': bool(decision.can_apply and decision.suggested_price != decision.old_price),
+                    'status': decision.status,
+                    'reason': decision.reason,
+                    'competitor_price': decision.competitor_price,
+                    'data_source': decision.data_source,
+                    'cache_state': decision.cache_state,
+                }
+                self._save_job_item(db, job, item)
+                job.processed += 1
+                if item['status'] == 'error':
+                    job.errors += 1
+                elif item['changed']:
+                    job.changed += 1
+                elif item['status'] == 'unchanged':
+                    job.unchanged += 1
+                else:
+                    job.skipped += 1
+                job.heartbeat_at = datetime.utcnow()
+                db.add(job)
+                db.commit()
+            except Exception as exc:
+                if 'job' in locals() and job:
+                    product = db.query(Product).filter(Product.id == int(product_id)).first()
+                    item = {
+                        'product_id': int(product_id),
+                        'sku': str(product.kaspi_sku or '') if product else '',
+                        'name': str(product.name or '') if product else '',
+                        'old_price': int(round(float(product.current_price or 0))) if product else 0,
+                        'new_price': int(round(float(product.current_price or 0))) if product else 0,
+                        'changed': False,
+                        'status': 'error',
+                        'reason': 'Ошибка обработки товара. Цена оставлена без изменений.',
+                        'error_message': str(exc)[:2000],
+                        'data_source': '',
+                        'cache_state': '',
+                    }
+                    self._save_job_item(db, job, item)
+                    job.errors += 1
+                    job.processed += 1
+                    job.cursor_product_id = int(product_id)
+                    job.error_message = str(exc)[:500]
+                    db.add(job)
+                    db.commit()
+                logger.exception('Autopilot product %s failed: %s', product_id, exc)
+            finally:
+                db.close()
+            delay = max(0.0, float(settings.KASPI_AUTOPILOT_DELAY_SECONDS or 0))
+            if delay:
+                await asyncio.sleep(delay)
+
+        db = SessionLocal()
+        try:
+            job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+            store = db.query(Store).filter(Store.id == job.store_id).first() if job else None
+            if not job or not store:
+                return
+            decisions = self._job_decisions(db, int(job.id))
+            full_products = xml_feed_service.expected_products(db, store.id)
+            if not full_products:
+                raise XmlFeedError('Нет активных товаров для полного XML.')
+            product_by_id = {p.id: p for p in full_products}
+            candidates = [item for item in decisions if item['changed'] and item['product_id'] in product_by_id]
+            allowed, queued, budget = price_change_limiter.allocate(db, store.id, candidates)
+            allowed_ids = {int(x['product_id']) for x in allowed}
+            queued_ids = {int(x['product_id']) for x in queued}
+            price_by_sku = {str(p.kaspi_sku): int(round(float(p.current_price or 0))) for p in full_products}
+            for item in decisions:
+                if int(item['product_id']) in allowed_ids:
+                    price_by_sku[str(item['sku'])] = int(item['new_price'])
+                    item['status'] = 'changed'
+                elif int(item['product_id']) in queued_ids:
+                    item['status'] = 'queued'
+                    item['requested_price'] = item['new_price']
+                    item['new_price'] = item['old_price']
+                    item['changed'] = False
+                    item['reason'] = 'В очереди: достигнут лимит изменений.'
+            job.changed = len(allowed)
+            job.queued_changes = len(queued)
+            record = xml_feed_service.save_feed(store=store, products=full_products, price_by_sku=price_by_sku, warehouse_id=job.warehouse_id, processed=job.processed, changed=len(allowed), skipped=job.unchanged + job.skipped, queued=len(queued), errors=job.errors, q_filter=job.mode, details=decisions)
+            if not record.get('is_active'):
+                raise XmlFeedError(record.get('rejection_reason') or 'Новая XML-версия отклонена.')
+
+            if settings.KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE:
+                for item in allowed:
+                    product = product_by_id.get(int(item['product_id']))
+                    if not product:
+                        continue
+                    old_price = float(product.current_price or 0)
+                    new_price = float(item['new_price'])
+                    product.current_price = new_price
+                    db.add(product)
+                    db.add(PriceHistory(product_id=product.id, old_price=old_price, new_price=new_price, reason=str(item.get('reason') or ''), source='xml_prepared'))
+            price_change_limiter.record_applied(db, store.id, str(record['feed_id']), allowed)
+            job.status = AutopilotJobStatus.DONE
+            job.finished_at = datetime.utcnow()
+            job.heartbeat_at = datetime.utcnow()
+            job.current_product_id = None
+            job.result_json = json.dumps({'feed_id': record['feed_id'], 'budget': budget, 'source_state': competitor_service.state_info(db)}, ensure_ascii=False)
+            db.add(job)
+            db.add(Alert(title='XML создан', body=f'{store.name}: {record["product_count"]} товаров, {len(allowed)} новых цен, {len(queued)} в очереди.', type=AlertType.SYSTEM))
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+            if job:
+                job.status = AutopilotJobStatus.ERROR
+                job.finished_at = datetime.utcnow()
+                job.error_message = str(exc)[:1000]
+                db.add(job)
+                db.commit()
+            logger.exception('Autopilot job %s failed: %s', job_id, exc)
+        finally:
+            db.close()
+
+    async def rebuild_store_feed(self, db: Session, store_id: int, *, reason: str = 'manual', warehouse_id: str = '', limit_count: int = 0, q_filter: str = '', update_local_prices: bool | None = None) -> dict[str, Any]:
+        job = self.enqueue(db, store_id, mode=reason, query_filter=q_filter, requested_limit=limit_count, warehouse_id=warehouse_id)
+        return {'store_id': store_id, 'ok': True, 'queued': True, 'job_id': job.id, 'message': 'Задание поставлено в очередь.'}
 
     async def rebuild_all_stores(self, reason: str = 'manual') -> list[dict[str, Any]]:
         db = SessionLocal()
         try:
-            stores = db.query(Store).filter(Store.is_active == True).order_by(Store.id.asc()).all()
             results = []
-            for store in stores:
-                try:
-                    results.append(await self.rebuild_store_feed(db, store.id, reason=reason))
-                except Exception as exc:
-                    logger.exception('Autopilot failed for store %s: %s', store.id, exc)
-                    results.append({'store_id': store.id, 'ok': False, 'error': str(exc)[:300]})
+            for store in db.query(Store).filter(Store.is_active == True).all():
+                job = self.enqueue(db, store.id, mode=reason)
+                results.append({'store_id': store.id, 'ok': True, 'job_id': job.id})
             return results
         finally:
             db.close()
 
     async def rebuild_store_if_stale(self, db: Session, store_id: int, reason: str = 'pull_if_stale') -> dict[str, Any] | None:
-        if not self.enabled() or not bool(getattr(settings, 'KASPI_XML_REBUILD_ON_PULL', True)):
-            return None
-        if not self.is_feed_stale(store_id):
-            return None
-        return await self.rebuild_store_feed(db, store_id, reason=reason)
-
-    def _query_product_ids(self, db: Session, store_id: int, *, limit_count: int = 0, q_filter: str = '') -> list[int]:
-        q = db.query(Product).filter(
-            Product.store_id == store_id,
-            Product.auto_pricing_enabled == True,
-            Product.status == ProductStatus.ACTIVE,
-            Product.min_price > 0,
-            Product.max_price > 0,
-        )
-        if bool(getattr(settings, 'KASPI_AUTOPILOT_ONLY_IN_STOCK', True)):
-            q = q.filter(Product.stock != 0)
-        # pull a reasonable superset then use Python casefold for Cyrillic search reliability
-        max_products = int(getattr(settings, 'KASPI_AUTOPILOT_MAX_PRODUCTS_PER_RUN', 5000) or 5000)
-        if limit_count and int(limit_count) > 0:
-            max_products = min(max_products, int(limit_count))
-        rows = q.order_by(Product.id.asc()).limit(max_products if not q_filter.strip() else 10000).all()
-        if q_filter.strip():
-            needle = ' '.join(q_filter.casefold().split())
-            rows = [p for p in rows if needle in ' '.join([str(p.name or ''), str(p.kaspi_sku or ''), str(getattr(p, 'product_id', '') or ''), str(p.url or ''), str(p.brand or '')]).casefold()]
-            rows = rows[:max_products]
-        return [int(p.id) for p in rows]
-
-    async def _process_one(self, product_id: int, update_local_prices: bool) -> dict[str, Any]:
-        db = SessionLocal()
-        try:
-            product = db.query(Product).filter(Product.id == int(product_id)).first()
-            if not product:
-                return {'product_id': product_id, 'sku': '', 'name': '', 'old_price': 0, 'new_price': 0, 'delta': 0, 'changed': False, 'reason': 'Товар не найден', 'status': 'error'}
-            old_price = int(round(float(product.current_price or 0)))
-            new_price = old_price
-            reason = 'Без изменения'
-            status = 'same'
-            try:
-                decision = await pricing_engine.preview_product(db, product)
-                reason = str(decision.reason or '')
-                if decision.can_apply:
-                    new_price = int(round(float(decision.suggested_price)))
-                    status = 'changed' if new_price != old_price else 'same'
-                else:
-                    if str(reason).startswith('Kaspi:') or 'HTTP 405' in str(reason) or 'HTTP 429' in str(reason) or 'Конкуренты временно недоступны' in str(reason) or 'Method Not Allowed' in str(reason):
-                        status = 'error'
-                    else:
-                        status = 'skipped'
-            except Exception as exc:
-                reason = f'Ошибка расчёта: {exc}'[:300]
-                status = 'error'
-                product.last_autopilot_error = reason
-                db.add(product)
-                db.commit()
-
-            # Здесь только рассчитываем предложение. Фактическое включение новой цены
-            # в XML выполняется ниже, после проверки лимита 250 изменений / 30 минут.
-            if status != 'error':
-                product.last_autopilot_error = ''
-                db.add(product)
-                db.commit()
-
-            return {
-                'product_id': product.id,
-                'sku': str(product.kaspi_sku or ''),
-                'name': str(product.name or product.kaspi_sku or ''),
-                'old_price': old_price,
-                'new_price': new_price,
-                'delta': new_price - old_price,
-                'changed': new_price != old_price,
-                'reason': reason,
-                'status': status,
-                'url': product.url or '',
-            }
-        finally:
-            db.close()
-
-    async def rebuild_store_feed(
-        self,
-        db: Session,
-        store_id: int,
-        *,
-        reason: str = 'manual',
-        warehouse_id: str = '',
-        limit_count: int = 0,
-        q_filter: str = '',
-        update_local_prices: bool | None = None,
-    ) -> dict[str, Any]:
-        store_id = int(store_id)
-        lock = self._lock_for(store_id)
-        if lock.locked():
-            return {'store_id': store_id, 'ok': False, 'busy': True, 'message': 'Автопилот уже считает XML для этого магазина'}
-
-        async with lock:
-            self._stop_flags.discard(store_id)
-            store = db.query(Store).filter(Store.id == store_id).first()
-            if not store:
-                raise XmlFeedError('Магазин не найден')
-
-            product_ids = self._query_product_ids(db, store_id, limit_count=limit_count, q_filter=q_filter)
-            if not product_ids:
-                raise XmlFeedError('Нет готовых товаров для XML. Сначала импортируй ACTIVE.xlsx и примени лимиты.')
-
-            if update_local_prices is None:
-                update_local_prices = bool(getattr(settings, 'KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE', True))
-            warehouse_id = (warehouse_id or '').strip() or str(getattr(settings, 'KASPI_AUTOPILOT_WAREHOUSE_ID', '') or 'PP1')
-            concurrency = max(1, min(int(getattr(settings, 'KASPI_AUTOPILOT_CONCURRENCY', 1) or 1), 5))
-            semaphore = asyncio.Semaphore(concurrency)
-            total = len(product_ids)
-            processed = 0
-            suggested = 0
-            skipped = 0
-            errors = 0
-            details: list[dict[str, Any]] = []
-
-            started_at = datetime.utcnow().isoformat(timespec='seconds')
-            initial_budget = price_change_limiter.usage(db, store_id)
-            self._last_status[store_id] = {
-                'running': True,
-                'started_at': started_at,
-                'processed_now': 0,
-                'total': total,
-                'percent': 0,
-                'reason': reason,
-                'changed': 0,
-                'suggested': 0,
-                'queued': 0,
-                'skipped': 0,
-                'errors': 0,
-                'rate_limit': initial_budget,
-            }
-
-            async def guarded(pid: int):
-                async with semaphore:
-                    if store_id in self._stop_flags:
-                        return {
-                            'product_id': pid,
-                            'sku': '',
-                            'name': '',
-                            'old_price': 0,
-                            'new_price': 0,
-                            'delta': 0,
-                            'changed': False,
-                            'reason': 'Остановлено пользователем',
-                            'status': 'stopped',
-                        }
-                    delay = float(getattr(settings, 'KASPI_AUTOPILOT_DELAY_SECONDS', 5) or 0)
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                    return await self._process_one(pid, False)
-
-            tasks = [asyncio.create_task(guarded(pid)) for pid in product_ids]
-            for task in asyncio.as_completed(tasks):
-                item = await task
-                processed += 1
-                details.append(item)
-                if item.get('status') == 'error':
-                    errors += 1
-                elif item.get('changed'):
-                    suggested += 1
-                else:
-                    skipped += 1
-
-                self._last_status[store_id] = {
-                    'running': True,
-                    'started_at': started_at,
-                    'processed_now': processed,
-                    'total': total,
-                    'percent': round(processed / max(1, total) * 100, 1),
-                    'reason': reason,
-                    'last_sku': str(item.get('sku') or ''),
-                    'changed': 0,
-                    'suggested': suggested,
-                    'queued': 0,
-                    'skipped': skipped,
-                    'errors': errors,
-                    'concurrency': concurrency,
-                    'rate_limit': initial_budget,
-                }
-                if store_id in self._stop_flags:
-                    break
-
-            if store_id in self._stop_flags:
-                self._stop_flags.discard(store_id)
-                result = {
-                    'store_id': store_id,
-                    'ok': False,
-                    'stopped': True,
-                    'message': 'Автопилот остановлен. Новый XML не сохранён, Kaspi отдаётся последняя безопасная версия.',
-                    'processed': processed,
-                    'changed': 0,
-                    'suggested': suggested,
-                    'queued': 0,
-                    'skipped': skipped,
-                    'errors': errors,
-                    'reason': reason,
-                    'rate_limit': initial_budget,
-                }
-                self._last_status[store_id] = {
-                    **result,
-                    'running': False,
-                    'percent': round(processed / max(1, total) * 100, 1),
-                    'concurrency': concurrency,
-                }
-                return result
-
-            products = db.query(Product).filter(Product.id.in_(product_ids)).order_by(Product.id.asc()).all()
-            product_by_id = {int(product.id): product for product in products}
-
-            # Лимит считается по уже сохранённым XML-версиям в PostgreSQL.
-            # При заявленных 250 изменениях за 30 минут оставляем запас 10 и выпускаем максимум 240.
-            budget = price_change_limiter.usage(db, store_id)
-            remaining = int(budget.get('remaining') or 0) if budget.get('enabled') else 10**9
-            queued = 0
-            changed = 0
-            final_skipped = 0
-            allowed_changes: list[dict[str, Any]] = []
-            price_by_sku: dict[str, int] = {}
-
-            for item in details:
-                product = product_by_id.get(int(item.get('product_id') or 0))
-                old_price = int(item.get('old_price') or 0)
-                requested_price = int(item.get('new_price') or old_price)
-
-                if item.get('status') == 'error':
-                    item['new_price'] = old_price
-                    item['delta'] = 0
-                    item['changed'] = False
-                elif item.get('changed') and requested_price != old_price:
-                    if remaining > 0:
-                        remaining -= 1
-                        changed += 1
-                        allowed_changes.append(item)
-                        item['status'] = 'changed'
-                    else:
-                        queued += 1
-                        item['requested_price'] = requested_price
-                        item['new_price'] = old_price
-                        item['delta'] = 0
-                        item['changed'] = False
-                        item['status'] = 'queued'
-                        item['reason'] = (
-                            f'Отложено: лимит изменений исчерпан. '
-                            f'За {budget.get("window_minutes", 30)} минут разрешено '
-                            f'{budget.get("effective_limit", 240)} безопасных изменений.'
-                        )
-                else:
-                    final_skipped += 1
-
-                sku = str(item.get('sku') or '')
-                if sku:
-                    price_by_sku[sku] = int(item.get('new_price') or old_price)
-                elif product and product.kaspi_sku:
-                    price_by_sku[str(product.kaspi_sku)] = int(item.get('new_price') or old_price)
-
-            # Любой товар без результата расчёта остаётся в полном XML с текущей безопасной ценой.
-            for product in products:
-                sku = str(product.kaspi_sku or '')
-                if sku and sku not in price_by_sku:
-                    price_by_sku[sku] = int(round(float(product.current_price or 0)))
-
-            record = xml_feed_service.save_feed(
-                store=store,
-                products=products,
-                price_by_sku=price_by_sku,
-                warehouse_id=warehouse_id,
-                processed=processed,
-                changed=changed,
-                skipped=final_skipped,
-                queued=queued,
-                limit_count=limit_count,
-                q_filter=q_filter or reason,
-                details=details,
-            )
-
-            # После успешного сохранения полного XML синхронизируем локальную цену только
-            # для тех товаров, которые вошли в текущий безопасный пакет.
-            if update_local_prices and allowed_changes:
-                for item in allowed_changes:
-                    product = product_by_id.get(int(item.get('product_id') or 0))
-                    if not product:
-                        continue
-                    old_price = int(item.get('old_price') or round(float(product.current_price or 0)))
-                    new_price = int(item.get('new_price') or old_price)
-                    if new_price == old_price:
-                        continue
-                    product.current_price = new_price
-                    product.last_autopilot_error = ''
-                    db.add(product)
-                    db.add(PriceHistory(
-                        product_id=product.id,
-                        old_price=old_price,
-                        new_price=new_price,
-                        reason=f'XML автопилот: {item.get("reason") or "автоматическое правило"}',
-                        source='xml_autopilot_prepared',
-                    ))
-
-            db.add(Alert(
-                title='XML автопилот обновил прайс',
-                body=(
-                    f'{store.name}: товаров {processed}, новых цен {changed}, '
-                    f'в очереди {queued}, без изменений {final_skipped}, ошибок {errors}. '
-                    f'Лимит: использовано {budget.get("used", 0)} из {budget.get("effective_limit", 240)} '
-                    f'за {budget.get("window_minutes", 30)} минут.'
-                ),
-                type=AlertType.SYSTEM,
-            ))
-            db.commit()
-
-            # После сохранения эта XML-версия уже учитывается в окне.
-            budget_after = price_change_limiter.usage(db, store_id)
-            result = {
-                'store_id': store_id,
-                'ok': True,
-                'feed_id': record.get('feed_id'),
-                'filename': record.get('filename'),
-                'processed': processed,
-                'changed': changed,
-                'suggested': suggested,
-                'queued': queued,
-                'skipped': final_skipped,
-                'errors': errors,
-                'updated_at': record.get('updated_at'),
-                'reason': reason,
-                'rate_limit': budget_after,
-            }
-            self._last_status[store_id] = {
-                **result,
-                'running': False,
-                'percent': 100,
-                'concurrency': concurrency,
-            }
-            return result
-
-    def last_status(self, store_id: int | None) -> dict[str, Any] | None:
-        if not store_id:
-            return None
-        return self._last_status.get(int(store_id))
+        # Deliberately never calculate inside a Kaspi XML request. It must return immediately.
+        return None
 
 
 autopilot_service = AutoPilotService()

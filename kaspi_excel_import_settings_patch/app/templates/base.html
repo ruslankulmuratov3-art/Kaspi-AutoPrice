@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Kaspi Price Manager Pro{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="shell">
+  {% if user %}
+  <aside class="sidebar">
+    <a class="brand" href="/dashboard">
+      <span class="brand-mark">K</span>
+      <span><b>Kaspi SaaS</b><small>Price Manager Pro</small></span>
+    </a>
+    <nav class="nav">
+      <a href="/dashboard" class="nav-link">Панель</a>
+      <a href="/stores" class="nav-link">Магазины</a>
+      <a href="/products" class="nav-link">Товары</a>
+      <a href="/history" class="nav-link">История цен</a>
+      <a href="/admin" class="nav-link">Админка</a>
+    </nav>
+    <div class="sidebar-card">
+      <p>Автоцены</p>
+      <strong>Excel прайс-лист Kaspi</strong>
+      <small>Автоцена скачивает файл, цену в API напрямую не трогает</small>
+    </div>
+  </aside>
+  {% endif %}
+
+  <main class="main">
+    {% if user %}
+    <header class="topbar">
+      <div>
+        <small>Аккаунт</small>
+        <h3>{{ user.display_name }}</h3>
+      </div>
+      <div class="top-actions">
+        <!-- Глобальный запуск автоцен скрыт для безопасности. Запускай автоцену только из карточки одного товара. -->
+        <form method="post" action="/logout"><button class="btn">Выйти</button></form>
+      </div>
+    </header>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

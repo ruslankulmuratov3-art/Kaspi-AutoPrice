@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Товары — Kaspi SaaS{% endblock %}
+{% block content %}
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Каталог</p>
+    <h1>Товары и реальные цены Kaspi</h1>
+    <p class="muted">Импортируй товары из ACTIVE.xlsx, подтверди лимиты и скачивай готовый автопрайс для Kaspi.</p>
+  </div>
+  <a class="btn" href="/api/reports/products.csv">Экспорт CSV</a>
+</section>
+
+<section class="metrics">
+  <div class="metric card"><span>Всего на странице</span><strong>{{ products|length }}</strong></div>
+  <div class="metric card"><span>Готовы к автоцене</span><strong>{{ ready_count }}</strong></div>
+  <div class="metric card"><span>Нужно подтвердить</span><strong>{{ pending_count }}</strong></div>
+  <div class="metric card"><span>Режим</span><strong>Excel</strong><small>API цену напрямую не трогает</small></div>
+</section>
+
+<section class="grid-2">
+  <form class="card form" method="post" action="/products/import-kaspi-excel" enctype="multipart/form-data">
+    <h2>Импорт товаров из Kaspi Excel</h2>
+    <p class="notice info">Сюда загружай ACTIVE.xlsx / прайс-лист, который скачал из кабинета Kaspi. Сайт добавит товары в базу, но цены в Kaspi не поменяет.</p>
+    <label>Магазин
+      <select name="store_id" required>{% for s in stores %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select>
+    </label>
+    <label>Excel Kaspi .xlsx<input type="file" name="file" accept=".xlsx" required></label>
+    <button class="btn btn-primary">Добавить/обновить товары из Excel</button>
+  </form>
+
+  <form class="card form" method="post" action="/products/bulk-setup">
+    <h2>Быстро настроить неподтверждённые</h2>
+    <p class="muted">После импорта у товаров нет твоего минимума/максимума. Тут можно массово поставить безопасные лимиты от текущей цены.</p>
+    <div class="form-grid">
+      <label>Минимум ниже текущей на %<input name="min_down_percent" type="number" value="12" step="1"></label>
+      <label>Максимум выше текущей на %<input name="max_up_percent" type="number" value="15" step="1"></label>
+      <label>Себестоимость % от цены<input name="cost_percent" type="number" value="65" step="1"></label>
+      <label>Макс. изменение за раз %<input name="max_change_percent_per_run" type="number" value="20" step="1"></label>
+      <label>Снижать ниже конкурента на ₸<input name="beat_step" type="number" value="10" step="10"></label>
+      <label>Мин. маржа %<input name="min_margin_percent" type="number" value="8" step="1"></label>
+    </div>
+    <button class="btn">Поставить лимиты и включить автоцену</button>
+  </form>
+</section>
+
+{% if pending_products %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Неподтверждённые товары</h2>
+      <p class="muted">Эти товары импортированы, но их нужно проверить: мин/макс/себестоимость/авто. Массовый автопрайс берёт только подтверждённые товары.</p>
+    </div>
+    <span class="badge hot">{{ pending_count }} шт.</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Товар</th><th>Текущая</th><th>Мин/макс</th><th>Авто</th><th></th></tr></thead>
+      <tbody>
+      {% for p in pending_products %}
+      <tr>
+        <td><a href="/products/{{ p.id }}">{{ p.name }}</a><small>{{ p.kaspi_sku }}</small></td>
+        <td>{{ p.current_price|money }}</td>
+        <td>{{ p.min_price|money }} — {{ p.max_price|money }}</td>
+        <td><span class="badge">нужно проверить</span></td>
+        <td><a class="btn btn-small" href="/products/{{ p.id }}">Настроить</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="card form">
+  <h2>Массовый автопрайс для подтверждённых товаров</h2>
+  <p class="muted">Правильное место для ACTIVE.xlsx из Kaspi. Сайт рассчитает цены по конкурентам и скачает новый Excel. Это ещё НЕ меняет цены в Kaspi — файл нужно вручную загрузить в кабинет.</p>
+  <form method="post" action="/pricing/run-all" enctype="multipart/form-data">
+    <label>Шаблон прайс-листа Kaspi .xlsx <input type="file" name="template" accept=".xlsx"></label>
+    <button class="btn btn-primary">Рассчитать подтверждённые товары и скачать Excel</button>
+  </form>
+</section>
+
+<section class="grid-2">
+  <form class="card form" method="post" action="/products">
+    <h2>Добавить товар вручную</h2>
+    <label>Магазин<select name="store_id" required>{% for s in stores %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></label>
+    <label>SKU Kaspi<input name="kaspi_sku" required placeholder="108692468_218383169"></label>
+    <label>Ссылка Kaspi<input name="url" placeholder="https://kaspi.kz/shop/p/...-108692468/"></label>
+    <label>Название<input name="name" required placeholder="Название товара"></label>
+    <div class="form-grid"><label>Цена<input name="current_price" type="number" value="0"></label><label>Мин<input name="min_price" type="number" value="0"></label><label>Макс<input name="max_price" type="number" value="0"></label><label>Себестоимость<input name="cost_price" type="number" value="0"></label></div>
+    <button class="btn">Добавить</button>
+  </form>
+  <form class="card form" method="post" action="/products/import" enctype="multipart/form-data">
+    <h2>Импорт CSV</h2><p class="notice info">Сюда НЕ загружай ACTIVE.xlsx из Kaspi. Этот блок только для CSV.</p>
+    <p class="muted">Колонки: store_id, kaspi_sku, url, name, current_price, min_price, max_price, cost_price, stock.</p>
+    <input type="file" name="file" accept=".csv" required>
+    <button class="btn">Загрузить CSV</button>
+  </form>
+</section>
+
+<section class="card">
+  <form class="searchbar" method="get"><input name="q" value="{{ q }}" placeholder="Поиск по названию или SKU"><button class="btn">Найти</button></form>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Товар</th><th>Цена</th><th>Лимиты</th><th>Авто</th><th></th></tr></thead>
+      <tbody>
+      {% for p in products %}
+      <tr>
+        <td><a href="/products/{{ p.id }}">{{ p.name }}</a><small>{{ p.kaspi_sku }}</small></td>
+        <td>{{ p.current_price|money }}</td>
+        <td>{{ p.min_price|money }} — {{ p.max_price|money }}</td>
+        <td><span class="badge {{ 'on' if p.auto_pricing_enabled else '' }}">{{ 'on' if p.auto_pricing_enabled else 'off' }}</span></td>
+        <td><a class="btn btn-small" href="/products/{{ p.id }}">Открыть</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

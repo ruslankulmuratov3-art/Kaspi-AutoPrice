@@ -1,4 +1,5 @@
 from fastapi.templating import Jinja2Templates
+from app.core.config import settings
 
 templates = Jinja2Templates(directory='app/templates')
 
@@ -11,3 +12,5 @@ def money(value) -> str:
 
 
 templates.env.filters['money'] = money
+
+templates.env.globals['settings'] = settings
