@@ -60,18 +60,26 @@ class Settings(BaseSettings):
     # XML Autopilot: после первого импорта ACTIVE.xlsx сайт сам пересобирает XML-прайс.
     # Kaspi забирает ссылку /kaspi-feed/{store_id}.xml по своему расписанию.
     KASPI_AUTOPILOT_ENABLED: bool = True
-    KASPI_AUTOPILOT_INTERVAL_MINUTES: int = 60
+    KASPI_AUTOPILOT_INTERVAL_MINUTES: int = 30
     KASPI_AUTOPILOT_STARTUP_DELAY_SECONDS: int = 25
     KASPI_AUTOPILOT_MAX_PRODUCTS_PER_RUN: int = 5000
     KASPI_AUTOPILOT_WAREHOUSE_ID: str = 'PP1'
     KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE: bool = True
     KASPI_AUTOPILOT_DELAY_SECONDS: float = 5.0
     KASPI_XML_REBUILD_ON_PULL: bool = True
-    KASPI_XML_STALE_AFTER_MINUTES: int = 55
+    KASPI_XML_STALE_AFTER_MINUTES: int = 25
     KASPI_COMPETITOR_CACHE_MINUTES: int = 360
     KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR: bool = True
     KASPI_AUTOPILOT_CONCURRENCY: int = 1
     KASPI_AUTOPILOT_ONLY_IN_STOCK: bool = True
+
+    # Защита лимита изменений Kaspi: не более 250 изменений за 30 минут.
+    # Используем запас 10 и реально выпускаем максимум 240 новых цен за окно.
+    KASPI_PRICE_CHANGE_LIMIT_ENABLED: bool = True
+    KASPI_PRICE_CHANGE_WINDOW_MINUTES: int = 30
+    KASPI_PRICE_CHANGE_LIMIT_PER_WINDOW: int = 250
+    KASPI_PRICE_CHANGE_SAFETY_RESERVE: int = 10
+
     KASPI_DEFAULT_STORE_AUTO_CREATE: bool = True
 
     SMTP_HOST: str = ''

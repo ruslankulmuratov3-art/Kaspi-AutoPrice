@@ -25,6 +25,7 @@ from app.services.price_list_import_service import price_list_import_service, Pr
 from app.services.generated_price_list_service import generated_price_list_service
 from app.services.xml_feed_service import xml_feed_service, XmlFeedError
 from app.services.autopilot_service import autopilot_service
+from app.services.price_change_limiter import price_change_limiter
 from app.web.templating import templates
 from app.web.deps import current_user_optional
 
@@ -715,6 +716,7 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
     feed_versions = xml_feed_service.list_versions(selected_store_id, limit=8) if selected_store_id else []
     feed_pulls = xml_feed_service.list_pulls(selected_store_id, limit=8) if selected_store_id else []
     autopilot_status = autopilot_service.last_status(selected_store_id) if selected_store_id else None
+    price_change_budget = price_change_limiter.usage(db, selected_store_id) if selected_store_id else price_change_limiter.usage(db, None)
     ready_count = 0
     if selected_store_id:
         ready_count = db.query(Product).filter(
@@ -737,6 +739,7 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
         'feed_versions': feed_versions,
         'feed_pulls': feed_pulls,
         'autopilot_status': autopilot_status,
+        'price_change_budget': price_change_budget,
         'ready_count': ready_count,
         'feed_url': feed_url,
         'android_url': android_url,
@@ -767,7 +770,10 @@ async def autopilot_run_now_page(
         )
         if not result.get('ok'):
             return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(result.get('message') or result.get('error') or 'Автопилот занят'), status_code=303)
-        msg = f'Автопилот обновил XML: товаров {result["processed"]}, новых цен {result["changed"]}, пропущено {result["skipped"]}, ошибок {result["errors"]}.'
+        msg = (
+            f'Автопилот обновил XML: товаров {result["processed"]}, новых цен {result["changed"]}, '
+            f'в очереди {result.get("queued", 0)}, без изменений {result["skipped"]}, ошибок {result["errors"]}.'
+        )
         return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(msg), status_code=303)
     except Exception as exc:
         return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
@@ -793,99 +799,27 @@ async def rebuild_xml_feed_page(
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
-    store = db.query(Store).filter(Store.id == store_id).first()
-    if not store:
-        return RedirectResponse('/automation?error=' + quote('Магазин не найден'), status_code=303)
-    products_query = db.query(Product).filter(
-        Product.store_id == store_id,
-        Product.auto_pricing_enabled == True,
-        Product.status == ProductStatus.ACTIVE,
-        Product.min_price > 0,
-        Product.max_price > 0,
-    )
-    if q_filter.strip():
-        like = f'%{q_filter.strip()}%'
-        products_query = products_query.filter(or_(
-            Product.name.ilike(like),
-            Product.kaspi_sku.ilike(like),
-            Product.product_id.ilike(like),
-            Product.brand.ilike(like),
-            Product.model.ilike(like),
-            Product.url.ilike(like),
-        ))
     try:
-        limit_count = int(limit_count or 0)
-    except (TypeError, ValueError):
-        limit_count = 0
-    if limit_count > 0:
-        products_query = products_query.order_by(Product.id.desc()).limit(min(limit_count, 5000))
-    else:
-        products_query = products_query.order_by(Product.id.desc()).limit(5000)
-    products = products_query.all()
-    if not products:
-        return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote('Нет готовых товаров для XML. Сначала импортируй ACTIVE.xlsx и примени лимиты.'), status_code=303)
-
-    price_by_sku: dict[str, int] = {}
-    details: list[dict] = []
-    changed = 0
-    skipped = 0
-    for product in products:
-        old_price = int(round(float(product.current_price or 0)))
-        new_price = old_price
-        reason = 'Без изменения'
-        status = 'same'
-        try:
-            decision = await pricing_engine.preview_product(db, product)
-            reason = str(decision.reason or '')
-            if decision.can_apply:
-                new_price = int(round(float(decision.suggested_price)))
-                status = 'changed' if new_price != old_price else 'same'
-                price_by_sku[product.kaspi_sku] = new_price
-                if new_price != old_price:
-                    changed += 1
-                else:
-                    skipped += 1
-            else:
-                new_price = old_price
-                price_by_sku[product.kaspi_sku] = old_price
-                status = 'skipped'
-                skipped += 1
-        except Exception as exc:
-            new_price = old_price
-            reason = f'Ошибка расчёта: {exc}'[:300]
-            status = 'error'
-            price_by_sku[product.kaspi_sku] = old_price
-            skipped += 1
-        details.append({
-            'product_id': product.id,
-            'sku': str(product.kaspi_sku or ''),
-            'name': str(product.name or product.kaspi_sku or ''),
-            'old_price': old_price,
-            'new_price': new_price,
-            'delta': new_price - old_price,
-            'changed': new_price != old_price,
-            'reason': reason,
-            'status': status,
-            'url': product.url or '',
-        })
-    try:
-        record = xml_feed_service.save_feed(
-            store=store,
-            products=products,
-            price_by_sku=price_by_sku,
-            warehouse_id=warehouse_id.strip(),
-            processed=len(products),
-            changed=changed,
-            skipped=skipped,
+        result = await autopilot_service.rebuild_store_feed(
+            db,
+            store_id,
+            reason='manual_xml_rebuild',
+            warehouse_id=warehouse_id,
             limit_count=limit_count,
             q_filter=q_filter,
-            details=details,
         )
-    except XmlFeedError as exc:
+        if not result.get('ok'):
+            return RedirectResponse(
+                f'/automation?store_id={store_id}&error=' + quote(result.get('message') or result.get('error') or 'Не удалось пересобрать XML'),
+                status_code=303,
+            )
+        message = (
+            f'XML готов: товаров {result.get("processed", 0)}, новых цен {result.get("changed", 0)}, '
+            f'в очереди {result.get("queued", 0)}, ошибок {result.get("errors", 0)}.'
+        )
+        return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(message), status_code=303)
+    except Exception as exc:
         return RedirectResponse(f'/automation?store_id={store_id}&error=' + quote(str(exc)[:400]), status_code=303)
-    db.add(Alert(title='XML-прайс обновлён', body=f'XML для магазина {store.name}: товаров {len(products)}, новых цен {changed}, без изменений/ошибок {skipped}. Ссылка для Kaspi: /kaspi-feed/{store_id}.xml', type=AlertType.SYSTEM))
-    db.commit()
-    return RedirectResponse(f'/automation?store_id={store_id}&message=' + quote(f'XML готов: {record["filename"]}. Товаров: {len(products)}, новых цен: {changed}. Ссылка готова для Kaspi.'), status_code=303)
 
 
 @web_router.get('/kaspi-feed/{store_id}.xml')

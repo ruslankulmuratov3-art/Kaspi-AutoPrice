@@ -14,6 +14,7 @@ from app.models.price_history import PriceHistory
 from app.models.product import Product, ProductStatus
 from app.models.store import Store
 from app.services.pricing_engine import pricing_engine
+from app.services.price_change_limiter import price_change_limiter
 from app.services.xml_feed_service import XmlFeedError, xml_feed_service
 
 logger = get_logger(__name__)
@@ -169,11 +170,11 @@ class AutoPilotService:
                 db.add(product)
                 db.commit()
 
-            if new_price != old_price and update_local_prices:
-                product.current_price = new_price
+            # Здесь только рассчитываем предложение. Фактическое включение новой цены
+            # в XML выполняется ниже, после проверки лимита 250 изменений / 30 минут.
+            if status != 'error':
                 product.last_autopilot_error = ''
                 db.add(product)
-                db.add(PriceHistory(product_id=product.id, old_price=old_price, new_price=new_price, reason=f'XML автопилот: {reason}', source='xml_autopilot_prepared'))
                 db.commit()
 
             return {
@@ -206,53 +207,77 @@ class AutoPilotService:
         lock = self._lock_for(store_id)
         if lock.locked():
             return {'store_id': store_id, 'ok': False, 'busy': True, 'message': 'Автопилот уже считает XML для этого магазина'}
+
         async with lock:
             self._stop_flags.discard(store_id)
             store = db.query(Store).filter(Store.id == store_id).first()
             if not store:
                 raise XmlFeedError('Магазин не найден')
+
             product_ids = self._query_product_ids(db, store_id, limit_count=limit_count, q_filter=q_filter)
             if not product_ids:
                 raise XmlFeedError('Нет готовых товаров для XML. Сначала импортируй ACTIVE.xlsx и примени лимиты.')
+
             if update_local_prices is None:
                 update_local_prices = bool(getattr(settings, 'KASPI_AUTOPILOT_UPDATE_LOCAL_PRICE', True))
             warehouse_id = (warehouse_id or '').strip() or str(getattr(settings, 'KASPI_AUTOPILOT_WAREHOUSE_ID', '') or 'PP1')
-            concurrency = max(1, min(int(getattr(settings, 'KASPI_AUTOPILOT_CONCURRENCY', 3) or 3), 5))
+            concurrency = max(1, min(int(getattr(settings, 'KASPI_AUTOPILOT_CONCURRENCY', 1) or 1), 5))
             semaphore = asyncio.Semaphore(concurrency)
             total = len(product_ids)
             processed = 0
-            changed = 0
+            suggested = 0
             skipped = 0
             errors = 0
             details: list[dict[str, Any]] = []
-            price_by_sku: dict[str, int] = {}
 
             started_at = datetime.utcnow().isoformat(timespec='seconds')
-            self._last_status[store_id] = {'running': True, 'started_at': started_at, 'processed_now': 0, 'total': total, 'percent': 0, 'reason': reason, 'changed': 0, 'skipped': 0, 'errors': 0}
+            initial_budget = price_change_limiter.usage(db, store_id)
+            self._last_status[store_id] = {
+                'running': True,
+                'started_at': started_at,
+                'processed_now': 0,
+                'total': total,
+                'percent': 0,
+                'reason': reason,
+                'changed': 0,
+                'suggested': 0,
+                'queued': 0,
+                'skipped': 0,
+                'errors': 0,
+                'rate_limit': initial_budget,
+            }
 
             async def guarded(pid: int):
                 async with semaphore:
                     if store_id in self._stop_flags:
-                        return {'product_id': pid, 'sku': '', 'name': '', 'old_price': 0, 'new_price': 0, 'delta': 0, 'changed': False, 'reason': 'Остановлено пользователем', 'status': 'stopped'}
+                        return {
+                            'product_id': pid,
+                            'sku': '',
+                            'name': '',
+                            'old_price': 0,
+                            'new_price': 0,
+                            'delta': 0,
+                            'changed': False,
+                            'reason': 'Остановлено пользователем',
+                            'status': 'stopped',
+                        }
                     delay = float(getattr(settings, 'KASPI_AUTOPILOT_DELAY_SECONDS', 5) or 0)
                     if delay > 0:
                         await asyncio.sleep(delay)
-                    return await self._process_one(pid, bool(update_local_prices))
+                    return await self._process_one(pid, False)
 
             tasks = [asyncio.create_task(guarded(pid)) for pid in product_ids]
             for task in asyncio.as_completed(tasks):
                 item = await task
                 processed += 1
                 details.append(item)
-                sku = str(item.get('sku') or '')
-                if sku:
-                    price_by_sku[sku] = int(item.get('new_price') or item.get('old_price') or 0)
                 if item.get('status') == 'error':
                     errors += 1
                 elif item.get('changed'):
-                    changed += 1
+                    suggested += 1
                 else:
                     skipped += 1
+
                 self._last_status[store_id] = {
                     'running': True,
                     'started_at': started_at,
@@ -260,11 +285,14 @@ class AutoPilotService:
                     'total': total,
                     'percent': round(processed / max(1, total) * 100, 1),
                     'reason': reason,
-                    'last_sku': sku,
-                    'changed': changed,
+                    'last_sku': str(item.get('sku') or ''),
+                    'changed': 0,
+                    'suggested': suggested,
+                    'queued': 0,
                     'skipped': skipped,
                     'errors': errors,
                     'concurrency': concurrency,
+                    'rate_limit': initial_budget,
                 }
                 if store_id in self._stop_flags:
                     break
@@ -277,21 +305,77 @@ class AutoPilotService:
                     'stopped': True,
                     'message': 'Автопилот остановлен. Новый XML не сохранён, Kaspi отдаётся последняя безопасная версия.',
                     'processed': processed,
-                    'changed': changed,
+                    'changed': 0,
+                    'suggested': suggested,
+                    'queued': 0,
                     'skipped': skipped,
                     'errors': errors,
                     'reason': reason,
+                    'rate_limit': initial_budget,
                 }
-                self._last_status[store_id] = {**result, 'running': False, 'percent': round(processed / max(1, total) * 100, 1), 'concurrency': concurrency}
+                self._last_status[store_id] = {
+                    **result,
+                    'running': False,
+                    'percent': round(processed / max(1, total) * 100, 1),
+                    'concurrency': concurrency,
+                }
                 return result
 
             products = db.query(Product).filter(Product.id.in_(product_ids)).order_by(Product.id.asc()).all()
-            # XML всегда должен содержать полный выбранный набор товаров. Даже если часть товаров
-            # не проверилась из-за 405/429, для них будет использована текущая безопасная цена.
+            product_by_id = {int(product.id): product for product in products}
+
+            # Лимит считается по уже сохранённым XML-версиям в PostgreSQL.
+            # При заявленных 250 изменениях за 30 минут оставляем запас 10 и выпускаем максимум 240.
+            budget = price_change_limiter.usage(db, store_id)
+            remaining = int(budget.get('remaining') or 0) if budget.get('enabled') else 10**9
+            queued = 0
+            changed = 0
+            final_skipped = 0
+            allowed_changes: list[dict[str, Any]] = []
+            price_by_sku: dict[str, int] = {}
+
+            for item in details:
+                product = product_by_id.get(int(item.get('product_id') or 0))
+                old_price = int(item.get('old_price') or 0)
+                requested_price = int(item.get('new_price') or old_price)
+
+                if item.get('status') == 'error':
+                    item['new_price'] = old_price
+                    item['delta'] = 0
+                    item['changed'] = False
+                elif item.get('changed') and requested_price != old_price:
+                    if remaining > 0:
+                        remaining -= 1
+                        changed += 1
+                        allowed_changes.append(item)
+                        item['status'] = 'changed'
+                    else:
+                        queued += 1
+                        item['requested_price'] = requested_price
+                        item['new_price'] = old_price
+                        item['delta'] = 0
+                        item['changed'] = False
+                        item['status'] = 'queued'
+                        item['reason'] = (
+                            f'Отложено: лимит изменений исчерпан. '
+                            f'За {budget.get("window_minutes", 30)} минут разрешено '
+                            f'{budget.get("effective_limit", 240)} безопасных изменений.'
+                        )
+                else:
+                    final_skipped += 1
+
+                sku = str(item.get('sku') or '')
+                if sku:
+                    price_by_sku[sku] = int(item.get('new_price') or old_price)
+                elif product and product.kaspi_sku:
+                    price_by_sku[str(product.kaspi_sku)] = int(item.get('new_price') or old_price)
+
+            # Любой товар без результата расчёта остаётся в полном XML с текущей безопасной ценой.
             for product in products:
                 sku = str(product.kaspi_sku or '')
                 if sku and sku not in price_by_sku:
                     price_by_sku[sku] = int(round(float(product.current_price or 0)))
+
             record = xml_feed_service.save_feed(
                 store=store,
                 products=products,
@@ -299,15 +383,70 @@ class AutoPilotService:
                 warehouse_id=warehouse_id,
                 processed=processed,
                 changed=changed,
-                skipped=skipped,
+                skipped=final_skipped,
+                queued=queued,
                 limit_count=limit_count,
                 q_filter=q_filter or reason,
                 details=details,
             )
-            db.add(Alert(title='XML автопилот обновил прайс', body=f'{store.name}: товаров {processed}, новых цен {changed}, без изменений {skipped}, ошибок {errors}. Файл {record.get("filename")}.', type=AlertType.SYSTEM))
+
+            # После успешного сохранения полного XML синхронизируем локальную цену только
+            # для тех товаров, которые вошли в текущий безопасный пакет.
+            if update_local_prices and allowed_changes:
+                for item in allowed_changes:
+                    product = product_by_id.get(int(item.get('product_id') or 0))
+                    if not product:
+                        continue
+                    old_price = int(item.get('old_price') or round(float(product.current_price or 0)))
+                    new_price = int(item.get('new_price') or old_price)
+                    if new_price == old_price:
+                        continue
+                    product.current_price = new_price
+                    product.last_autopilot_error = ''
+                    db.add(product)
+                    db.add(PriceHistory(
+                        product_id=product.id,
+                        old_price=old_price,
+                        new_price=new_price,
+                        reason=f'XML автопилот: {item.get("reason") or "автоматическое правило"}',
+                        source='xml_autopilot_prepared',
+                    ))
+
+            db.add(Alert(
+                title='XML автопилот обновил прайс',
+                body=(
+                    f'{store.name}: товаров {processed}, новых цен {changed}, '
+                    f'в очереди {queued}, без изменений {final_skipped}, ошибок {errors}. '
+                    f'Лимит: использовано {budget.get("used", 0)} из {budget.get("effective_limit", 240)} '
+                    f'за {budget.get("window_minutes", 30)} минут.'
+                ),
+                type=AlertType.SYSTEM,
+            ))
             db.commit()
-            result = {'store_id': store_id, 'ok': True, 'feed_id': record.get('feed_id'), 'filename': record.get('filename'), 'processed': processed, 'changed': changed, 'skipped': skipped, 'errors': errors, 'updated_at': record.get('updated_at'), 'reason': reason}
-            self._last_status[store_id] = {**result, 'running': False, 'percent': 100, 'concurrency': concurrency}
+
+            # После сохранения эта XML-версия уже учитывается в окне.
+            budget_after = price_change_limiter.usage(db, store_id)
+            result = {
+                'store_id': store_id,
+                'ok': True,
+                'feed_id': record.get('feed_id'),
+                'filename': record.get('filename'),
+                'processed': processed,
+                'changed': changed,
+                'suggested': suggested,
+                'queued': queued,
+                'skipped': final_skipped,
+                'errors': errors,
+                'updated_at': record.get('updated_at'),
+                'reason': reason,
+                'rate_limit': budget_after,
+            }
+            self._last_status[store_id] = {
+                **result,
+                'running': False,
+                'percent': 100,
+                'concurrency': concurrency,
+            }
             return result
 
     def last_status(self, store_id: int | None) -> dict[str, Any] | None:

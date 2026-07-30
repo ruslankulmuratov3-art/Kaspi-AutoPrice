@@ -34,6 +34,7 @@
 <section class="metrics small-metrics">
   <div class="metric premium-card"><span>Готовые товары</span><strong>{{ ready_count }}</strong><small>пойдут в XML</small></div>
   <div class="metric premium-card"><span>Изменено в XML</span><strong>{{ feed_record.changed if feed_record else 0 }}</strong><small>последняя версия</small></div>
+  <div class="metric premium-card"><span>Лимит изменений</span><strong>{{ price_change_budget.used }} / {{ price_change_budget.effective_limit }}</strong><small>осталось {{ price_change_budget.remaining }} за {{ price_change_budget.window_minutes }} мин.</small></div>
   <div class="metric premium-card"><span>Последний запрос</span><strong>{{ feed_pulls[0].accessed_at if feed_pulls else '—' }}</strong><small>Kaspi/браузер</small></div>
 </section>
 
@@ -47,7 +48,7 @@
   <div class="progress-panel">
     <div class="progress-head"><b>{{ autopilot_status.processed_now or autopilot_status.processed or 0 }} / {{ autopilot_status.total or autopilot_status.processed or 0 }}</b><span>{{ autopilot_status.percent or 0 }}%</span></div>
     <div class="progress-track"><i style="width: {{ autopilot_status.percent or 0 }}%"></i></div>
-    <p class="muted">Изменено {{ autopilot_status.changed or 0 }} · без изменений {{ autopilot_status.skipped or 0 }} · ошибок {{ autopilot_status.errors or 0 }}</p>
+    <p class="muted">Кандидатов {{ autopilot_status.suggested or autopilot_status.changed or 0 }} · применено {{ autopilot_status.changed or 0 }} · очередь {{ autopilot_status.queued or 0 }} · без изменений {{ autopilot_status.skipped or 0 }} · ошибок {{ autopilot_status.errors or 0 }}</p>
   </div>
   {% else %}
   <div class="empty-archive">Запустите автопилот после импорта и лимитов.</div>
@@ -73,7 +74,7 @@
     {% if feed_record %}
     <div class="archive-item">
       <div><b>{{ feed_record.filename }}</b><small>{{ feed_record.updated_at }} · {{ (feed_record.size_bytes / 1024)|round(1) }} KB</small></div>
-      <div class="archive-stats"><span>товаров <b>{{ feed_record.processed }}</b></span><span>изменено <b>{{ feed_record.changed }}</b></span></div>
+      <div class="archive-stats"><span>товаров <b>{{ feed_record.processed }}</b></span><span>изменено <b>{{ feed_record.changed }}</b></span><span>очередь <b>{{ feed_record.queued or 0 }}</b></span></div>
       <a class="btn btn-small" href="{{ feed_url }}" target="_blank">Открыть</a>
     </div>
     {% else %}
@@ -107,5 +108,5 @@
   </div>
 </section>
 
-<div class="notice info compact">Мы видим, когда XML был запрошен. Подтверждение обработки смотрите в кабинете Kaspi.</div>
+<div class="notice info compact">За одно 30-минутное окно приложение выпускает максимум 240 новых цен из лимита 250. Остальные изменения переходят в очередь. Мы видим запрос XML, а подтверждение обработки смотрите в кабинете Kaspi.</div>
 {% endblock %}
