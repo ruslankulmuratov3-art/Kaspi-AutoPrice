@@ -95,8 +95,16 @@ class CompetitorSnapshot(Base, TimestampMixin):
     offers_json = Column(Text, default='[]')
     fetched_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True, index=True)
     http_status = Column(Integer, nullable=True)
     last_error = Column(Text, default='')
+
+    # Short-lived task lease used by multiple trusted local agents.
+    lease_owner = Column(String(120), default='', index=True)
+    lease_token = Column(String(80), default='', index=True)
+    lease_started_at = Column(DateTime, nullable=True)
+    lease_until = Column(DateTime, nullable=True, index=True)
 
     product = relationship('Product')
     store = relationship('Store')

@@ -1,11 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Настройки — Kaspi AutoPrice{% endblock %}
+{% block title %}Админ — Kaspi AutoPrice{% endblock %}
 {% block content %}
-<section class="hero">
-  <div><p class="eyebrow">Настройки</p><h1>Система</h1><p class="lead">Пользователи и уведомления.</p></div>
+<section class="hero admin-hero">
+  <div><p class="eyebrow">Администрирование</p><h1>Доступ и устройства</h1><p class="lead">Коды, пользователи и доверенные агенты в одном месте.</p></div>
+  <div class="hero-actions"><span class="badge {{ 'on' if google_enabled else 'status-pending' }}">Google: {{ 'готов' if google_enabled else 'не настроен' }}</span></div>
 </section>
+
+{% if flash.message %}
+<div class="notice {{ flash.level or 'success' }}">
+  <b>{{ flash.message }}</b>
+  {% if flash.code %}<div class="secret-code" data-copy-text="{{ flash.code }}"><code>{{ flash.code }}</code><button class="btn btn-small btn-soft" type="button" data-copy>Копировать</button></div>{% endif %}
+</div>
+{% endif %}
+
+<section class="grid-2 action-grid">
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Новый пользователь</p><h2>Код регистрации</h2></div></div>
+    <form class="form form-grid" method="post" action="/admin/invites/account/create">
+      <label>Срок, часов<input name="expires_hours" type="number" min="1" max="720" value="72"></label>
+      <label>Количество регистраций<input name="max_uses" type="number" min="1" max="100" value="1"></label>
+      <label class="field-wide">Комментарий<input name="note" placeholder="Например: сотрудник склада"></label>
+      <button class="btn btn-primary field-wide" type="submit">Создать код</button>
+    </form>
+  </div>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Новое устройство</p><h2>Код подключения</h2></div></div>
+    <form class="form form-grid" method="post" action="/admin/invites/device/create">
+      <label class="field-wide">Пользователь<select name="user_id" required>{% for u in users if u.is_active %}<option value="{{ u.id }}">{{ u.email }} · {{ u.role.value }}</option>{% endfor %}</select></label>
+      <label>Срок, часов<input name="expires_hours" type="number" min="1" max="720" value="24"></label>
+      <label>Комментарий<input name="note" placeholder="Телефон, офисный ПК"></label>
+      <button class="btn btn-primary field-wide" type="submit">Создать код устройства</button>
+    </form>
+  </div>
+</section>
+
+<section class="premium-card">
+  <div class="card-head"><div><p class="eyebrow">Аккаунты</p><h2>Пользователи · {{ users|length }}</h2></div></div>
+  <div class="table-wrap"><table class="admin-table"><thead><tr><th>Пользователь</th><th>Вход</th><th>Роль</th><th>Статус</th><th>Действия</th></tr></thead><tbody>
+  {% for u in users %}
+  <tr>
+    <td><b>{{ u.full_name or u.username }}</b><small>{{ u.email }}</small></td>
+    <td><span class="badge">{{ u.auth_provider or 'password' }}</span><small>{{ u.last_login_at or '—' }}</small></td>
+    <td><form class="inline-admin-form" method="post" action="/admin/users/{{ u.id }}/role"><select name="role"><option value="owner" {% if u.role.value=='owner' %}selected{% endif %}>owner</option><option value="admin" {% if u.role.value=='admin' %}selected{% endif %}>admin</option><option value="manager" {% if u.role.value=='manager' %}selected{% endif %}>manager</option><option value="viewer" {% if u.role.value=='viewer' %}selected{% endif %}>viewer</option></select><button class="btn btn-small btn-soft">Сохранить</button></form></td>
+    <td><span class="badge {{ 'on' if u.is_active else 'status-pending' }}">{{ 'Активен' if u.is_active else 'Отключён' }}</span></td>
+    <td><div class="row-actions"><form method="post" action="/admin/users/{{ u.id }}/toggle"><button class="btn btn-small btn-soft">{{ 'Отключить' if u.is_active else 'Включить' }}</button></form><form method="post" action="/admin/users/{{ u.id }}/delete" onsubmit="return confirm('Удалить пользователя?')"><button class="btn btn-small btn-danger">Удалить</button></form></div></td>
+  </tr>
+  {% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="premium-card">
+  <div class="card-head"><div><p class="eyebrow">Агенты</p><h2>Зарегистрированные устройства · {{ devices|length }}</h2></div></div>
+  <div class="device-grid">
+  {% for d in devices %}
+    <article class="device-card {{ 'device-off' if not d.is_active else '' }}">
+      <div class="device-card-head"><div class="device-icon">{{ d.name[:1]|upper }}</div><div><h3>{{ d.name }}</h3><p>{{ d.user.email if d.user else 'Пользователь удалён' }}</p></div><span class="badge {{ 'on' if d.is_active else 'status-pending' }}">{{ 'Активно' if d.is_active else 'Отключено' }}</span></div>
+      <div class="device-meta"><span><small>Платформа</small><b>{{ d.platform }}</b></span><span><small>Последняя активность</small><b>{{ d.last_seen_at or '—' }}</b></span><span><small>IP</small><b>{{ d.last_ip or '—' }}</b></span><span><small>Результаты</small><b>{{ d.results_ok }} / {{ d.results_error }}</b></span></div>
+      <div class="row-actions">{% if d.is_active %}<form method="post" action="/admin/devices/{{ d.id }}/revoke"><button class="btn btn-small btn-soft">Отключить</button></form>{% endif %}<form method="post" action="/admin/devices/{{ d.id }}/delete" onsubmit="return confirm('Удалить устройство?')"><button class="btn btn-small btn-danger">Удалить</button></form></div>
+    </article>
+  {% else %}<div class="empty-state">Устройств пока нет.</div>{% endfor %}
+  </div>
+</section>
+
 <section class="grid-2">
-  <div class="premium-card"><div class="card-head"><div><p class="eyebrow">Users</p><h2>Пользователи</h2></div></div><div class="stack">{% for u in users %}<div class="list-item"><div><b>{{ u.username }}</b><small>{{ u.email }}</small></div><span class="badge">{{ u.role.value }}</span></div>{% endfor %}</div></div>
-  <div class="premium-card"><div class="card-head"><div><p class="eyebrow">Alerts</p><h2>Уведомления</h2></div></div><div class="stack">{% for a in alerts %}<div class="list-item"><div><b>{{ a.title }}</b><small>{{ a.body }}</small></div><span class="badge">{{ a.type.value }}</span></div>{% endfor %}</div></div>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Коды</p><h2>Последние приглашения</h2></div></div>
+    <div class="stack">
+    {% for c in invites %}<div class="list-item"><div><b>{{ c.kind.value }} · {{ c.code_prefix }}</b><small>{{ c.note or 'Без комментария' }} · {{ c.used_count }}/{{ c.max_uses }} · до {{ c.expires_at or 'без срока' }}{% if c.assigned_user %} · {{ c.assigned_user.email }}{% endif %}</small></div><div class="row-actions"><span class="badge {{ 'on' if c.is_active else 'status-pending' }}">{{ 'Активен' if c.is_active else 'Закрыт' }}</span>{% if c.is_active %}<form method="post" action="/admin/invites/{{ c.id }}/disable"><button class="btn btn-small btn-ghost">Закрыть</button></form>{% endif %}</div></div>{% else %}<div class="empty-state">Коды ещё не создавались.</div>{% endfor %}
+    </div>
+  </div>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Система</p><h2>Последние уведомления</h2></div></div>
+    <div class="stack">{% for a in alerts %}<div class="list-item"><div><b>{{ a.title }}</b><small>{{ a.body }}</small></div><span class="badge">{{ a.type.value }}</span></div>{% else %}<div class="empty-state">Уведомлений нет.</div>{% endfor %}</div>
+  </div>
 </section>
 {% endblock %}

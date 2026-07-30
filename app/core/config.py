@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = 'admin'
     ADMIN_PASSWORD: str = 'ChangeMe123!'
 
+    # Registration and trusted-device access. New accounts require an admin invite code.
+    REGISTRATION_ENABLED: bool = True
+    REGISTRATION_DEFAULT_ROLE: str = 'viewer'
+    ACCOUNT_INVITE_EXPIRE_HOURS: int = 72
+    DEVICE_INVITE_EXPIRE_HOURS: int = 24
+    GOOGLE_CLIENT_ID: str = ''
+    GOOGLE_CLIENT_SECRET: str = ''
+    GOOGLE_REDIRECT_URI: str = ''
+
     # Real Kaspi API. No mock mode.
     KASPI_BASE_URL: str = 'https://kaspi.kz/shop/api'
     KASPI_API_TOKEN: str = ''
@@ -104,6 +113,19 @@ class Settings(BaseSettings):
     KASPI_AUTOPILOT_HEARTBEAT_TIMEOUT_MINUTES: int = 15
     KASPI_AUTOPILOT_POLL_SECONDS: int = 3
     KASPI_AUTOPILOT_BATCH_SIZE: int = 25
+
+    # Локальный агент получает публичные цены с обычного компьютера пользователя
+    # и безопасно передаёт нормализованные результаты в Render.
+    LOCAL_AGENT_ENABLED: bool = False
+    LOCAL_AGENT_TOKEN: str = ''  # legacy shared token; per-device tokens are preferred
+    LOCAL_AGENT_ALLOW_LEGACY_TOKEN: bool = False
+    LOCAL_AGENT_BATCH_SIZE: int = 50
+    LOCAL_AGENT_CACHE_TTL_MINUTES: int = 360
+    LOCAL_AGENT_FAILURE_RETRY_MINUTES: int = 60
+    LOCAL_AGENT_MAX_PAYLOAD_OFFERS: int = 50
+    LOCAL_AGENT_LEASE_MINUTES: int = 15
+    LOCAL_AGENT_FLUSH_EVERY: int = 25
+    LOCAL_AGENT_MAX_TRUSTED_DEVICES: int = 4
 
     SMTP_HOST: str = ''
     SMTP_PORT: int = 587

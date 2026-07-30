@@ -42,7 +42,7 @@ $env:PYTHONPATH="."
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Сетевые тесты используют mock и не отправляют массовые запросы в Kaspi. Текущий комплект: 9 тестов.
+Сетевые тесты используют mock и не отправляют массовые запросы в Kaspi. Текущий комплект: 19 тестов.
 
 ## Render
 
@@ -84,3 +84,53 @@ git status
 git commit -m "Stable Kaspi AutoPrice v3"
 git push
 ```
+
+## Регистрация и доверенные устройства
+
+Новые аккаунты создаются только по одноразовому коду `USR`, который владелец выпускает в `/admin`.
+Поддерживаются email/пароль и Google OpenID Connect. Новому пользователю назначается роль `viewer`: он видит только страницу своих устройств и не получает доступ к магазинам, товарам и настройкам цен.
+
+Для подключения агента владелец создаёт код `DEV`, привязанный к конкретному пользователю. Агент обменивает этот код на отдельный токен устройства; в базе хранится только SHA-256 хэш токена. В админ-панели видно имя, пользователя, платформу, IP, последнюю активность и статистику. Устройство можно отключить или удалить.
+
+Render environment:
+
+```env
+REGISTRATION_ENABLED=true
+LOCAL_AGENT_ENABLED=true
+LOCAL_AGENT_ALLOW_LEGACY_TOKEN=false
+KASPI_PUBLIC_OFFERS_ENABLED=false
+PUBLIC_BASE_URL=https://kaspi-autoprice.onrender.com
+```
+
+Первое подключение устройства:
+
+```powershell
+$env:RENDER_BASE_URL="https://kaspi-autoprice.onrender.com"
+.\.venv\Scripts\python.exe scripts\local_agent.py --pair-code "DEV-XXXX-XXXX-XXXX" --device-name "Office PC" --fast
+```
+
+Следующие запуски:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\local_agent.py --fast
+```
+
+Токен сохраняется локально в `~/.kaspi_autoprice_agent.json`. Обычное открытие сайта в браузере телефона агент не запускает; на Android нужен Python/Termux или отдельное клиентское приложение.
+
+### Google вход
+
+Добавьте Web OAuth Client в Google Cloud и зарегистрируйте redirect URI:
+
+```text
+https://kaspi-autoprice.onrender.com/auth/google/callback
+```
+
+Render variables:
+
+```env
+GOOGLE_CLIENT_ID=<client id>
+GOOGLE_CLIENT_SECRET=<client secret>
+GOOGLE_REDIRECT_URI=https://kaspi-autoprice.onrender.com/auth/google/callback
+```
+
+Подробная пошаговая инструкция: `ACCESS_DEVICE_SETUP_RU.md`.

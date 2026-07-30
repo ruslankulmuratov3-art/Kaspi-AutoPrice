@@ -37,6 +37,7 @@ class Product(Base, TimestampMixin):
     last_seen_import_batch = Column(String(80), default='')
     missing_from_last_import = Column(Boolean, default=False, nullable=False)
     last_competitor_checked_at = Column(DateTime, nullable=True)
+    last_pricing_calculated_at = Column(DateTime, nullable=True)
     last_competitor_price = Column(Float, default=0.0)
     last_autopilot_error = Column(Text, default='')
 

@@ -16,11 +16,12 @@ from app.models.autopilot import (
 )
 from app.models.xml_feed import XmlFeedVersion, XmlFeedPull, XmlFeedStatus
 from app.models.price_change import PriceChangeEvent, PendingPriceChange
+from app.models.access import InviteCode, InviteKind, AgentDevice
 
 __all__ = [
     'User', 'Store', 'Product', 'ProductStatus', 'PricingRule', 'PricingStrategy',
     'PriceHistory', 'CompetitorOffer', 'TaskLog', 'TaskStatus', 'Alert', 'AlertType', 'AuditLog',
     'AutopilotJob', 'AutopilotJobItem', 'AutopilotJobStatus', 'CompetitorSnapshot',
     'CompetitorSourceState', 'XmlFeedVersion', 'XmlFeedPull', 'XmlFeedStatus',
-    'PriceChangeEvent', 'PendingPriceChange',
+    'PriceChangeEvent', 'PendingPriceChange', 'InviteCode', 'InviteKind', 'AgentDevice',
 ]

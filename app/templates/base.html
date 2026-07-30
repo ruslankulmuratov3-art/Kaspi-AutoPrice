@@ -23,6 +23,9 @@
       <span><b>Kaspi AutoPrice</b><small>XML autopilot</small></span>
     </a>
     <nav class="nav">
+      {% if user.role.value == 'viewer' %}
+      <a href="/agent-setup" class="nav-link">Моё устройство</a>
+      {% else %}
       <a href="/dashboard" class="nav-link">Обзор</a>
       <a href="/stores" class="nav-link">Магазины</a>
       <a href="/products" class="nav-link">Товары</a>
@@ -30,7 +33,9 @@
       <a href="/xml-history" class="nav-link">XML</a>
       <a href="/history" class="nav-link">История</a>
       <a href="/price-lists" class="nav-link">Архив</a>
-      <a href="/admin" class="nav-link">Настройки</a>
+      <a href="/agent-setup" class="nav-link">Устройства</a>
+      {% if user.role.value in ['owner', 'admin'] %}<a href="/admin" class="nav-link">Админ</a>{% endif %}
+      {% endif %}
     </nav>
   </aside>
   {% endif %}
@@ -44,8 +49,12 @@
         <b>{{ user.display_name if user.display_name else 'admin' }}</b>
       </div>
       <div class="top-actions">
+        {% if user.role.value == 'viewer' %}
+        <a class="btn btn-primary" href="/agent-setup">Устройство</a>
+        {% else %}
         <a class="btn btn-soft" href="/products">Товары</a>
         <a class="btn btn-primary" href="/automation">Автопилот</a>
+        {% endif %}
         <form method="post" action="/logout"><button class="btn btn-ghost" type="submit">Выйти</button></form>
       </div>
     </header>

@@ -57,6 +57,7 @@ def run_safe_schema_upgrade(engine: Engine) -> None:
         'last_seen_import_batch': varchar_80,
         'missing_from_last_import': bool_type,
         'last_competitor_checked_at': dt,
+        'last_pricing_calculated_at': dt,
         'last_competitor_price': float_type,
         'last_autopilot_error': text_type,
     }
@@ -65,6 +66,30 @@ def run_safe_schema_upgrade(engine: Engine) -> None:
             _add_column(engine, 'products', column, ddl_type)
         except Exception:
             # Additive migrations are best effort across SQLite/Postgres variations.
+            pass
+
+    user_columns = {
+        'full_name': varchar_255,
+        'avatar_url': text_type,
+        'auth_provider': varchar_80,
+        'google_sub': varchar_255,
+        'email_verified': bool_type,
+        'last_login_at': dt,
+    }
+    if _existing_columns(engine, 'users'):
+        for column, ddl_type in user_columns.items():
+            try:
+                _add_column(engine, 'users', column, ddl_type)
+            except Exception:
+                pass
+        try:
+            _add_index(engine, 'ix_users_google_sub', 'users', 'google_sub')
+            with engine.begin() as conn:
+                if dialect == 'postgresql':
+                    conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub_not_null ON users (google_sub) WHERE google_sub IS NOT NULL'))
+                else:
+                    conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub_not_null ON users (google_sub)'))
+        except Exception:
             pass
 
     store_columns = {
@@ -78,6 +103,26 @@ def run_safe_schema_upgrade(engine: Engine) -> None:
                 _add_column(engine, 'stores', column, ddl_type)
             except Exception:
                 pass
+
+    snapshot_columns = {
+        'last_attempt_at': dt,
+        'next_retry_at': dt,
+        'lease_owner': varchar_120,
+        'lease_token': varchar_80,
+        'lease_started_at': dt,
+        'lease_until': dt,
+    }
+    if _existing_columns(engine, 'competitor_snapshots'):
+        for column, ddl_type in snapshot_columns.items():
+            try:
+                _add_column(engine, 'competitor_snapshots', column, ddl_type)
+            except Exception:
+                pass
+        try:
+            _add_index(engine, 'ix_competitor_snapshots_next_retry_at', 'competitor_snapshots', 'next_retry_at')
+            _add_index(engine, 'ix_competitor_snapshots_lease_until', 'competitor_snapshots', 'lease_until')
+        except Exception:
+            pass
 
     try:
         _add_index(engine, 'ix_products_product_id', 'products', 'product_id')

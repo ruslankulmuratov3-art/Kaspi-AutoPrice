@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Устройства — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero">
+  <div><p class="eyebrow">Доверенные агенты</p><h1>Подключение устройства</h1><p class="lead">Каждое устройство получает отдельный токен. Его можно отключить в любой момент.</p></div>
+</section>
+{% if flash.message %}<div class="notice {{ flash.level or 'success' }}">{{ flash.message }}{% if flash.code %}<div class="secret-code" data-copy-text="{{ flash.code }}"><code>{{ flash.code }}</code><button class="btn btn-small btn-soft" type="button" data-copy>Копировать</button></div>{% endif %}</div>{% endif %}
+<section class="grid-2">
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Подключение</p><h2>Что сделать</h2></div></div>
+    <div class="step-list">
+      <div><span>1</span><p>Администратор создаёт для тебя код устройства.</p></div>
+      <div><span>2</span><p>На компьютере или Android с Python запускаешь агент с этим кодом.</p></div>
+      <div><span>3</span><p>Агент получает товары с Render и отправляет только результаты цен.</p></div>
+    </div>
+    <div class="notice info compact">Обычное открытие сайта в браузере телефона не запускает агент. На Android нужен Python/Termux или отдельное приложение.</div>
+    <div class="code-panel"><small>Первое подключение</small><code>python scripts/local_agent.py --pair-code "DEV-..." --device-name "Мой телефон" --fast</code></div>
+    <div class="code-panel"><small>Следующие запуски</small><code>python scripts/local_agent.py --fast</code></div>
+    <p class="muted">Сервер: {{ render_base_url }}</p>
+  </div>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Мои устройства</p><h2>{{ devices|length }} подключено</h2></div></div>
+    <div class="stack">
+      {% for d in devices %}
+      <div class="device-row">
+        <div class="device-icon">{{ d.name[:1]|upper }}</div>
+        <div class="device-main"><b>{{ d.name }}</b><small>{{ d.platform }} · {{ d.token_prefix }}</small><small>Последняя активность: {{ d.last_seen_at or 'ещё не запускалось' }}</small></div>
+        <div class="device-actions"><span class="badge {{ 'on' if d.is_active else 'status-pending' }}">{{ 'Активно' if d.is_active else 'Отключено' }}</span>{% if d.is_active %}<form method="post" action="/agent-setup/devices/{{ d.id }}/revoke"><button class="btn btn-small btn-danger" type="submit">Отключить</button></form>{% endif %}</div>
+      </div>
+      {% else %}<div class="empty-state">Устройств пока нет. Попроси администратора создать код.</div>{% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}

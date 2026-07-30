@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from urllib.parse import quote
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime
 from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse, FileResponse, JSONResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -14,9 +15,12 @@ from app.models.store import Store
 from app.models.price_history import PriceHistory
 from app.models.pricing_rule import PricingRule, PricingStrategy
 from app.models.alert import Alert, AlertType
-from app.models.user import User
+from app.models.user import User, UserRole
+from app.models.access import AgentDevice, InviteCode, InviteKind
 from app.repositories.users import users
 from app.services.auth_service import auth_service
+from app.services.access_service import access_service
+from app.services.google_oauth import google_enabled, google_oauth
 from app.services.report_service import report_service
 from app.services.import_service import import_service
 from app.services.pricing_engine import pricing_engine
@@ -57,6 +61,40 @@ def login_redirect():
     return RedirectResponse('/login', status_code=303)
 
 
+def _cookie_secure() -> bool:
+    return settings.ENVIRONMENT.lower() == 'production' or settings.PUBLIC_BASE_URL.lower().startswith('https://')
+
+
+def login_user_redirect(user: User, path: str | None = None) -> RedirectResponse:
+    target = path or ('/agent-setup' if user.role == UserRole.VIEWER else '/dashboard')
+    redirect = RedirectResponse(target, status_code=303)
+    redirect.set_cookie(
+        TOKEN_COOKIE_NAME,
+        auth_service.token_for_user(user),
+        httponly=True,
+        samesite='lax',
+        secure=_cookie_secure(),
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return redirect
+
+
+def require_web_admin(request: Request, db: Session) -> User | None:
+    user = ensure_user(request, db)
+    if not user or user.role not in (UserRole.OWNER, UserRole.ADMIN):
+        return None
+    return user
+
+
+def set_flash(request: Request, message: str, level: str = 'success', code: str = '') -> None:
+    request.session['flash'] = {'message': message, 'level': level, 'code': code}
+
+
+def pop_flash(request: Request) -> dict:
+    value = request.session.pop('flash', None)
+    return value if isinstance(value, dict) else {}
+
+
 def is_pending_product(product: Product) -> bool:
     return (
         not product.auto_pricing_enabled
@@ -66,28 +104,140 @@ def is_pending_product(product: Product) -> bool:
     )
 
 
+def resolve_selected_store_id(request: Request, db: Session, stores: list[Store], requested_store_id: int | None) -> int | None:
+    """Remember the selected store and never default to an empty accidental store."""
+    valid_ids = {int(store.id) for store in stores}
+    if requested_store_id and int(requested_store_id) in valid_ids:
+        selected = int(requested_store_id)
+        request.session['selected_store_id'] = selected
+        return selected
+
+    saved = request.session.get('selected_store_id')
+    try:
+        saved_id = int(saved) if saved is not None else None
+    except (TypeError, ValueError):
+        saved_id = None
+    if saved_id in valid_ids:
+        return saved_id
+
+    counts = dict(
+        db.query(Product.store_id, func.count(Product.id))
+        .group_by(Product.store_id)
+        .all()
+    )
+    populated = [store for store in stores if int(counts.get(store.id, 0)) > 0]
+    if populated:
+        selected_store = max(populated, key=lambda store: (int(counts.get(store.id, 0)), int(store.id)))
+    else:
+        selected_store = next((store for store in stores if store.is_active), stores[0] if stores else None)
+    selected = int(selected_store.id) if selected_store else None
+    if selected:
+        request.session['selected_store_id'] = selected
+    return selected
+
 
 @web_router.get('/', response_class=HTMLResponse)
 def root(request: Request, db: Session = Depends(get_db)):
     user = ensure_user(request, db)
     if not user:
         return RedirectResponse('/login', status_code=303)
-    return RedirectResponse('/dashboard', status_code=303)
+    return RedirectResponse('/agent-setup' if user.role == UserRole.VIEWER else '/dashboard', status_code=303)
 
 
 @web_router.get('/login', response_class=HTMLResponse)
-def login_page(request: Request, db: Session = Depends(get_db)):
+def login_page(request: Request, error: str = '', message: str = '', db: Session = Depends(get_db)):
     users.ensure_admin(db, settings.ADMIN_EMAIL, settings.ADMIN_USERNAME, settings.ADMIN_PASSWORD)
-    return templates.TemplateResponse('login.html', {'request': request, 'app_name': settings.APP_NAME})
+    return templates.TemplateResponse('login.html', {
+        'request': request,
+        'app_name': settings.APP_NAME,
+        'google_enabled': google_enabled(),
+        'registration_enabled': settings.REGISTRATION_ENABLED,
+        'error': error,
+        'message': message,
+    })
 
 
 @web_router.post('/login')
-def login_action(response: Response, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-    user = auth_service.authenticate(db, username, password)
-    token = auth_service.token_for_user(user)
-    redirect = RedirectResponse('/dashboard', status_code=303)
-    redirect.set_cookie(TOKEN_COOKIE_NAME, token, httponly=True, samesite='lax')
-    return redirect
+def login_action(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    try:
+        user = auth_service.authenticate(db, username, password)
+        user.last_login_at = datetime.utcnow()
+        db.add(user)
+        db.commit()
+        return login_user_redirect(user)
+    except HTTPException as exc:
+        return templates.TemplateResponse('login.html', {
+            'request': request,
+            'app_name': settings.APP_NAME,
+            'google_enabled': google_enabled(),
+            'registration_enabled': settings.REGISTRATION_ENABLED,
+            'error': str(exc.detail),
+            'message': '',
+        }, status_code=exc.status_code)
+
+
+@web_router.get('/register', response_class=HTMLResponse)
+def register_page(request: Request, error: str = '', db: Session = Depends(get_db)):
+    if not settings.REGISTRATION_ENABLED:
+        return RedirectResponse('/login?error=' + quote('Регистрация отключена'), status_code=303)
+    return templates.TemplateResponse('register.html', {
+        'request': request,
+        'google_enabled': google_enabled(),
+        'error': error,
+    })
+
+
+@web_router.post('/register', response_class=HTMLResponse)
+def register_action(
+    request: Request,
+    email: str = Form(...),
+    username: str = Form(''),
+    password: str = Form(...),
+    invite_code: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        user = access_service.register_password_user(
+            db,
+            email=email,
+            username=username,
+            password=password,
+            invite_code=invite_code,
+        )
+        return login_user_redirect(user)
+    except HTTPException as exc:
+        return templates.TemplateResponse('register.html', {
+            'request': request,
+            'google_enabled': google_enabled(),
+            'error': str(exc.detail),
+            'email': email,
+            'username': username,
+            'invite_code': invite_code,
+        }, status_code=exc.status_code)
+
+
+@web_router.get('/auth/google/start')
+async def google_start(request: Request, invite_code: str = ''):
+    if not google_enabled():
+        return RedirectResponse('/login?error=' + quote('Вход через Google ещё не настроен'), status_code=303)
+    if invite_code:
+        request.session['google_invite_code'] = invite_code.strip()
+    redirect_uri = settings.GOOGLE_REDIRECT_URI.strip() or str(request.url_for('google_callback'))
+    return RedirectResponse(google_oauth.authorization_url(request, redirect_uri), status_code=302)
+
+
+@web_router.get('/auth/google/callback', name='google_callback')
+async def google_callback(request: Request, code: str = '', state: str = '', db: Session = Depends(get_db)):
+    try:
+        redirect_uri = settings.GOOGLE_REDIRECT_URI.strip() or str(request.url_for('google_callback'))
+        profile = await google_oauth.exchange_code(request, code=code, state=state, redirect_uri=redirect_uri)
+        invite_code = str(request.session.pop('google_invite_code', '') or '')
+        user = access_service.login_or_register_google(db, profile, invite_code=invite_code)
+        return login_user_redirect(user)
+    except HTTPException as exc:
+        return RedirectResponse('/register?error=' + quote(str(exc.detail)), status_code=303)
+    except Exception:
+        return RedirectResponse('/login?error=' + quote('Google не подтвердил вход. Попробуй ещё раз.'), status_code=303)
 
 
 @web_router.post('/logout')
@@ -104,7 +254,7 @@ def dashboard(request: Request, store_id: int | None = None, db: Session = Depen
         return login_redirect()
     metrics = report_service.dashboard_metrics(db)
     stores = db.query(Store).order_by(Store.name.asc()).all()
-    selected_store_id = store_id or (stores[0].id if stores else None)
+    selected_store_id = resolve_selected_store_id(request, db, stores, store_id)
     selected_store = next((s for s in stores if s.id == selected_store_id), None) if selected_store_id else None
 
     product_query = db.query(Product)
@@ -214,7 +364,7 @@ def products_page(
         return login_redirect()
 
     stores = db.query(Store).order_by(Store.name.asc()).all()
-    selected_store_id = store_id or (stores[0].id if stores else None)
+    selected_store_id = resolve_selected_store_id(request, db, stores, store_id)
     selected_store = next((s for s in stores if s.id == selected_store_id), None) if selected_store_id else None
 
     query = db.query(Product)
@@ -653,7 +803,7 @@ def price_lists_page(request: Request, store_id: int | None = None, db: Session 
     if not user:
         return login_redirect()
     stores = db.query(Store).order_by(Store.name.asc()).all()
-    selected_store_id = store_id or None
+    selected_store_id = resolve_selected_store_id(request, db, stores, store_id)
     records = generated_price_list_service.list_records(store_id=selected_store_id, limit=80)
     return templates.TemplateResponse('price_lists.html', {
         'request': request,
@@ -692,7 +842,7 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
     if not user:
         return login_redirect()
     stores = db.query(Store).order_by(Store.name.asc()).all()
-    selected_store_id = store_id or (stores[0].id if stores else None)
+    selected_store_id = resolve_selected_store_id(request, db, stores, store_id)
     selected_store = next((store for store in stores if store.id == selected_store_id), None) if selected_store_id else None
     feed_record = xml_feed_service.get_record(selected_store_id) if selected_store_id else None
     feed_versions = xml_feed_service.list_versions(selected_store_id, limit=8) if selected_store_id else []
@@ -796,7 +946,7 @@ def xml_history_page(request: Request, store_id: int | None = None, feed_id: str
     if not user:
         return login_redirect()
     stores = db.query(Store).order_by(Store.name.asc()).all()
-    selected_store_id = store_id or (stores[0].id if stores else None)
+    selected_store_id = resolve_selected_store_id(request, db, stores, store_id)
     selected_store = next((store for store in stores if store.id == selected_store_id), None) if selected_store_id else None
     versions = xml_feed_service.list_versions(selected_store_id, limit=50) if selected_store_id else []
     pulls = xml_feed_service.list_pulls(selected_store_id, limit=100) if selected_store_id else []
@@ -874,11 +1024,225 @@ def clear_test_history_page(request: Request, db: Session = Depends(get_db)):
     return RedirectResponse('/history?message=' + quote('Тестовая история очищена. Товары и цены в Kaspi не трогались.'), status_code=303)
 
 
-@web_router.get('/admin', response_class=HTMLResponse)
-def admin_page(request: Request, db: Session = Depends(get_db)):
+@web_router.get('/agent-setup', response_class=HTMLResponse)
+def agent_setup_page(request: Request, db: Session = Depends(get_db)):
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
+    devices = db.query(AgentDevice).filter(AgentDevice.user_id == user.id).order_by(AgentDevice.id.desc()).all()
+    return templates.TemplateResponse('agent_setup.html', {
+        'request': request,
+        'user': user,
+        'devices': devices,
+        'flash': pop_flash(request),
+        'render_base_url': settings.PUBLIC_BASE_URL.strip().rstrip('/') or str(request.base_url).rstrip('/'),
+    })
+
+
+@web_router.post('/agent-setup/devices/{device_id}/revoke')
+def agent_setup_revoke_device(request: Request, device_id: int, db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    device = db.query(AgentDevice).filter(AgentDevice.id == device_id, AgentDevice.user_id == user.id).first()
+    if not device:
+        set_flash(request, 'Устройство не найдено', 'danger')
+        return RedirectResponse('/agent-setup', status_code=303)
+    access_service.revoke_device(db, device)
+    set_flash(request, f'Устройство «{device.name}» отключено')
+    return RedirectResponse('/agent-setup', status_code=303)
+
+
+@web_router.get('/admin', response_class=HTMLResponse)
+def admin_page(request: Request, db: Session = Depends(get_db)):
+    user = require_web_admin(request, db)
+    if not user:
+        return RedirectResponse('/dashboard', status_code=303)
     all_users = db.query(User).order_by(User.id.asc()).all()
-    alerts = db.query(Alert).order_by(Alert.id.desc()).limit(50).all()
-    return templates.TemplateResponse('admin.html', {'request': request, 'user': user, 'users': all_users, 'alerts': alerts})
+    invites = db.query(InviteCode).order_by(InviteCode.id.desc()).limit(100).all()
+    devices = db.query(AgentDevice).order_by(AgentDevice.id.desc()).limit(200).all()
+    alerts = db.query(Alert).order_by(Alert.id.desc()).limit(30).all()
+    return templates.TemplateResponse('admin.html', {
+        'request': request,
+        'user': user,
+        'users': all_users,
+        'invites': invites,
+        'devices': devices,
+        'alerts': alerts,
+        'flash': pop_flash(request),
+        'google_enabled': google_enabled(),
+    })
+
+
+@web_router.post('/admin/invites/account/create')
+def admin_create_account_invite(
+    request: Request,
+    expires_hours: int = Form(72),
+    max_uses: int = Form(1),
+    note: str = Form(''),
+    db: Session = Depends(get_db),
+):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    invite, plain = access_service.create_invite(
+        db,
+        kind=InviteKind.ACCOUNT,
+        created_by_id=admin.id,
+        expires_hours=expires_hours,
+        max_uses=max_uses,
+        note=note,
+    )
+    set_flash(request, 'Код регистрации создан. Он показывается полностью только сейчас.', code=plain)
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/invites/device/create')
+def admin_create_device_invite(
+    request: Request,
+    user_id: int = Form(...),
+    expires_hours: int = Form(24),
+    note: str = Form(''),
+    db: Session = Depends(get_db),
+):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    target = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+    if not target:
+        set_flash(request, 'Пользователь не найден или отключён', 'danger')
+        return RedirectResponse('/admin', status_code=303)
+    invite, plain = access_service.create_invite(
+        db,
+        kind=InviteKind.DEVICE,
+        created_by_id=admin.id,
+        assigned_user_id=target.id,
+        expires_hours=expires_hours,
+        max_uses=1,
+        note=note,
+    )
+    set_flash(request, f'Код устройства для {target.email} создан. Передай его владельцу устройства.', code=plain)
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/invites/{invite_id}/disable')
+def admin_disable_invite(request: Request, invite_id: int, db: Session = Depends(get_db)):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    invite = db.query(InviteCode).filter(InviteCode.id == invite_id).first()
+    if invite:
+        invite.is_active = False
+        db.add(invite)
+        db.commit()
+    set_flash(request, 'Код отключён')
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/users/{user_id}/toggle')
+def admin_toggle_user(request: Request, user_id: int, db: Session = Depends(get_db)):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        set_flash(request, 'Пользователь не найден', 'danger')
+    elif target.id == admin.id:
+        set_flash(request, 'Нельзя отключить свою учётную запись', 'danger')
+    else:
+        target.is_active = not bool(target.is_active)
+        if not target.is_active:
+            db.query(AgentDevice).filter(AgentDevice.user_id == target.id).update({'is_active': False}, synchronize_session=False)
+        db.add(target)
+        db.commit()
+        set_flash(request, 'Пользователь включён' if target.is_active else 'Пользователь отключён')
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/users/{user_id}/role')
+def admin_change_user_role(
+    request: Request,
+    user_id: int,
+    role: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    target = db.query(User).filter(User.id == user_id).first()
+    try:
+        new_role = UserRole(role)
+    except ValueError:
+        set_flash(request, 'Неизвестная роль', 'danger')
+        return RedirectResponse('/admin', status_code=303)
+    if not target:
+        set_flash(request, 'Пользователь не найден', 'danger')
+    elif target.id == admin.id and new_role != target.role:
+        set_flash(request, 'Свою роль меняй только через другого владельца', 'danger')
+    else:
+        target.role = new_role
+        db.add(target)
+        db.commit()
+        set_flash(request, f'Роль пользователя изменена на {new_role.value}')
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/users/{user_id}/delete')
+def admin_delete_user(request: Request, user_id: int, db: Session = Depends(get_db)):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        set_flash(request, 'Пользователь не найден', 'danger')
+    elif target.id == admin.id:
+        set_flash(request, 'Нельзя удалить свою учётную запись', 'danger')
+    elif db.query(Store.id).filter(Store.owner_id == target.id).first():
+        set_flash(request, 'У пользователя есть магазины. Сначала передай их другому владельцу.', 'danger')
+    elif db.query(InviteCode.id).filter(InviteCode.created_by_id == target.id).first():
+        set_flash(request, 'Пользователь создавал коды доступа. Его можно отключить, но не удалить.', 'danger')
+    else:
+        db.query(AgentDevice).filter(AgentDevice.user_id == target.id).delete(synchronize_session=False)
+        db.query(InviteCode).filter(InviteCode.assigned_user_id == target.id).update({'is_active': False, 'assigned_user_id': None}, synchronize_session=False)
+        db.delete(target)
+        db.commit()
+        set_flash(request, 'Пользователь удалён')
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/devices/{device_id}/revoke')
+def admin_revoke_device(request: Request, device_id: int, db: Session = Depends(get_db)):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    device = db.query(AgentDevice).filter(AgentDevice.id == device_id).first()
+    if device:
+        device.is_active = False
+        device.revoked_at = datetime.utcnow()
+        db.add(device)
+        db.query(CompetitorSnapshot).filter(CompetitorSnapshot.lease_owner == f'device:{device.id}').update({
+            'lease_owner': '', 'lease_token': '', 'lease_started_at': None, 'lease_until': None,
+        }, synchronize_session=False)
+        db.commit()
+        set_flash(request, f'Устройство «{device.name}» отключено')
+    else:
+        set_flash(request, 'Устройство не найдено', 'danger')
+    return RedirectResponse('/admin', status_code=303)
+
+
+@web_router.post('/admin/devices/{device_id}/delete')
+def admin_delete_device(request: Request, device_id: int, db: Session = Depends(get_db)):
+    admin = require_web_admin(request, db)
+    if not admin:
+        return login_redirect()
+    device = db.query(AgentDevice).filter(AgentDevice.id == device_id).first()
+    if device:
+        db.query(CompetitorSnapshot).filter(CompetitorSnapshot.lease_owner == f'device:{device.id}').update({
+            'lease_owner': '', 'lease_token': '', 'lease_started_at': None, 'lease_until': None,
+        }, synchronize_session=False)
+        db.delete(device)
+        db.commit()
+        set_flash(request, 'Устройство удалено')
+    else:
+        set_flash(request, 'Устройство не найдено', 'danger')
+    return RedirectResponse('/admin', status_code=303)

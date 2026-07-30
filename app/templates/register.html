@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Регистрация — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-copy">
+    <p class="eyebrow">Доступ по приглашению</p>
+    <h1>Сначала код от администратора.</h1>
+    <p class="lead">Код защищает панель от случайных регистраций.</p>
+  </div>
+  <div class="premium-card login-card">
+    <div class="card-head"><div><p class="eyebrow">Новый аккаунт</p><h2>Регистрация</h2></div></div>
+    {% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+    <form class="form" method="post" action="/register">
+      <label>Код приглашения<input name="invite_code" value="{{ invite_code or '' }}" placeholder="USR-XXXX-XXXX-XXXX" autocomplete="one-time-code" required></label>
+      <label>Email<input name="email" type="email" value="{{ email or '' }}" autocomplete="email" required></label>
+      <label>Логин<input name="username" value="{{ username or '' }}" autocomplete="username" placeholder="Можно оставить пустым"></label>
+      <label>Пароль<input name="password" type="password" minlength="8" maxlength="72" autocomplete="new-password" required></label>
+      <button class="btn btn-primary btn-wide">Создать аккаунт</button>
+    </form>
+    {% if google_enabled %}
+    <div class="auth-divider"><span>или</span></div>
+    <form class="form" method="get" action="/auth/google/start">
+      <label>Код приглашения для Google<input name="invite_code" value="{{ invite_code or '' }}" placeholder="USR-XXXX-XXXX-XXXX" required></label>
+      <button class="btn btn-google btn-wide" type="submit"><span class="google-mark">G</span> Продолжить с Google</button>
+    </form>
+    {% endif %}
+    <p class="auth-foot"><a href="/login">Уже есть аккаунт</a></p>
+  </div>
+</section>
+{% endblock %}

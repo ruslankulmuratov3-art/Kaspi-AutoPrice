@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -38,6 +37,7 @@ class CompetitorUnavailable(RuntimeError):
 
 class CompetitorService:
     SOURCE_KEY = 'kaspi_public_offers'
+    AGENT_SOURCE = 'local_agent'
 
     def __init__(self) -> None:
         self._semaphore = asyncio.Semaphore(max(1, min(settings.KASPI_AUTOPILOT_CONCURRENCY, 3)))
@@ -61,8 +61,12 @@ class CompetitorService:
         row = self._state(db)
         now = datetime.utcnow()
         cooldown = row.cooldown_until if row.cooldown_until and row.cooldown_until > now else None
+        mode = 'local_agent' if settings.LOCAL_AGENT_ENABLED and not settings.KASPI_PUBLIC_OFFERS_ENABLED else 'direct'
         return {
             'state': 'open' if cooldown else row.state,
+            'mode': mode,
+            'agent_enabled': bool(settings.LOCAL_AGENT_ENABLED),
+            'direct_enabled': bool(settings.KASPI_PUBLIC_OFFERS_ENABLED),
             'failure_count': row.failure_count,
             'cooldown_until': cooldown.isoformat(timespec='seconds') if cooldown else None,
             'last_http_status': row.last_http_status,
@@ -89,7 +93,24 @@ class CompetitorService:
             rows = json.loads(snapshot.offers_json or '[]')
         except Exception:
             rows = []
-        return [KaspiOffer(str(x.get('seller_name') or ''), str(x.get('seller_id') or ''), float(x.get('price') or 0), int(x.get('delivery_days') or 0), int(x.get('position') or 0)) for x in rows if float(x.get('price') or 0) > 0]
+        result: list[KaspiOffer] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                price = float(row.get('price') or 0)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            result.append(KaspiOffer(
+                str(row.get('seller_name') or ''),
+                str(row.get('seller_id') or ''),
+                price,
+                int(row.get('delivery_days') or 0),
+                int(row.get('position') or 0),
+            ))
+        return result
 
     def cached(self, db: Session, product: Product, *, allow_stale: bool = False) -> CompetitorResult | None:
         snapshot = self._snapshot(db, product)
@@ -107,10 +128,18 @@ class CompetitorService:
         offers = self._offers_from_snapshot(snapshot)
         if not offers:
             return None
-        return CompetitorResult(offers=offers, source=snapshot.source, cache_state=state, fetched_at=snapshot.fetched_at, error=snapshot.last_error or '', http_status=snapshot.http_status)
+        return CompetitorResult(
+            offers=offers,
+            source=snapshot.source,
+            cache_state=state,
+            fetched_at=snapshot.fetched_at,
+            error=snapshot.last_error or '',
+            http_status=snapshot.http_status,
+        )
 
     async def _rate_limit(self) -> None:
         import time
+
         rpm = max(1, int(settings.KASPI_PUBLIC_OFFERS_REQUESTS_PER_MINUTE or 1))
         async with self._rate_lock:
             now = time.monotonic()
@@ -154,21 +183,44 @@ class CompetitorService:
         db.add(row)
         db.commit()
 
-    def _save_snapshot(self, db: Session, product: Product, offers: list[KaspiOffer]) -> CompetitorSnapshot:
+    def _save_snapshot(
+        self,
+        db: Session,
+        product: Product,
+        offers: list[KaspiOffer],
+        *,
+        source: str | None = None,
+        http_status: int = 200,
+    ) -> CompetitorSnapshot:
         snapshot = self._snapshot(db, product) or CompetitorSnapshot(store_id=product.store_id, product_id=product.id)
         now = datetime.utcnow()
+        source = (source or self.SOURCE_KEY).strip()[:80]
+        clean_offers = [offer for offer in offers if float(offer.price or 0) > 0][: max(1, settings.LOCAL_AGENT_MAX_PAYLOAD_OFFERS)]
+
         snapshot.public_product_id = kaspi_client.extract_public_product_id(product)
-        snapshot.source = self.SOURCE_KEY
-        snapshot.status = 'ok'
-        snapshot.minimum_price = min(o.price for o in offers)
-        snapshot.offers_json = json.dumps([{'seller_name': o.seller_name, 'seller_id': o.seller_id, 'price': o.price, 'delivery_days': o.delivery_days, 'position': o.position} for o in offers], ensure_ascii=False)
+        snapshot.source = source
+        snapshot.status = 'ok' if clean_offers else 'empty'
+        snapshot.minimum_price = min((offer.price for offer in clean_offers), default=0.0)
+        snapshot.offers_json = json.dumps([
+            {
+                'seller_name': offer.seller_name,
+                'seller_id': offer.seller_id,
+                'price': offer.price,
+                'delivery_days': offer.delivery_days,
+                'position': offer.position,
+            }
+            for offer in clean_offers
+        ], ensure_ascii=False)
         snapshot.fetched_at = now
-        snapshot.expires_at = now + timedelta(minutes=max(1, settings.KASPI_COMPETITOR_CACHE_MINUTES))
-        snapshot.http_status = 200
+        snapshot.expires_at = now + timedelta(minutes=max(1, settings.LOCAL_AGENT_CACHE_TTL_MINUTES if source == self.AGENT_SOURCE else settings.KASPI_COMPETITOR_CACHE_MINUTES))
+        snapshot.last_attempt_at = now
+        snapshot.next_retry_at = None
+        snapshot.http_status = int(http_status or 200)
         snapshot.last_error = ''
         db.add(snapshot)
+
         db.query(CompetitorOffer).filter(CompetitorOffer.product_id == product.id).delete(synchronize_session=False)
-        for offer in offers:
+        for offer in clean_offers:
             db.add(CompetitorOffer(
                 product_id=product.id,
                 seller_name=offer.seller_name,
@@ -177,11 +229,49 @@ class CompetitorService:
                 delivery_days=offer.delivery_days,
                 position=offer.position,
             ))
+
         product.last_competitor_checked_at = now
         product.last_competitor_price = snapshot.minimum_price
-        product.last_autopilot_error = ''
+        product.last_autopilot_error = '' if clean_offers else 'Конкуренты не найдены. Цена оставлена без изменений.'
         db.add(product)
         db.commit()
+        db.refresh(snapshot)
+        return snapshot
+
+    def save_agent_payload(self, db: Session, product: Product, payload: Any, *, http_status: int = 200) -> CompetitorSnapshot:
+        offers = kaspi_client.parse_offers_payload(payload)
+        return self._save_snapshot(db, product, offers, source=self.AGENT_SOURCE, http_status=http_status)
+
+    def record_agent_failure(
+        self,
+        db: Session,
+        product: Product,
+        *,
+        error: str,
+        http_status: int | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> CompetitorSnapshot:
+        snapshot = self._snapshot(db, product) or CompetitorSnapshot(
+            store_id=product.store_id,
+            product_id=product.id,
+            public_product_id=kaspi_client.extract_public_product_id(product),
+            source=self.AGENT_SOURCE,
+            offers_json='[]',
+        )
+        now = datetime.utcnow()
+        fallback_seconds = max(60, int(settings.LOCAL_AGENT_FAILURE_RETRY_MINUTES or 60) * 60)
+        wait_seconds = max(60, int(retry_after_seconds or fallback_seconds))
+        snapshot.source = self.AGENT_SOURCE
+        snapshot.status = 'error'
+        snapshot.last_attempt_at = now
+        snapshot.next_retry_at = now + timedelta(seconds=wait_seconds)
+        snapshot.http_status = int(http_status) if http_status is not None else None
+        snapshot.last_error = str(error or 'Ошибка локального агента')[:500]
+        db.add(snapshot)
+        product.last_autopilot_error = snapshot.last_error
+        db.add(product)
+        db.commit()
+        db.refresh(snapshot)
         return snapshot
 
     async def get(self, db: Session, product: Product, *, force: bool = False) -> CompetitorResult:
@@ -189,6 +279,17 @@ class CompetitorService:
             cached = self.cached(db, product)
             if cached:
                 return cached
+
+        # На Render прямые запросы можно выключить. Тогда сервис только читает данные,
+        # которые безопасно прислал локальный агент с обычного компьютера пользователя.
+        if not settings.KASPI_PUBLIC_OFFERS_ENABLED:
+            cached = self.cached(db, product, allow_stale=bool(settings.KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR))
+            if cached:
+                cached.error = cached.error or 'Использованы данные локального агента из кэша.'
+                return cached
+            message = 'Ожидаются данные локального агента. Цена оставлена без изменений.' if settings.LOCAL_AGENT_ENABLED else 'Получение конкурентов выключено. Цена оставлена без изменений.'
+            raise CompetitorUnavailable(message)
+
         is_open, until = self.is_open(db)
         if is_open:
             stale = self.cached(db, product, allow_stale=bool(settings.KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR))
@@ -215,6 +316,8 @@ class CompetitorService:
                     snapshot = self._snapshot(db, product)
                     if snapshot:
                         snapshot.status = 'error'
+                        snapshot.last_attempt_at = datetime.utcnow()
+                        snapshot.next_retry_at = until
                         snapshot.http_status = getattr(exc, 'status_code', None)
                         snapshot.last_error = str(exc)[:500]
                         db.add(snapshot)
@@ -225,7 +328,11 @@ class CompetitorService:
                     if stale:
                         stale.error = str(exc)
                         return stale
-                    raise CompetitorUnavailable('Конкуренты временно недоступны. Цена оставлена без изменений.', cooldown_until=until, http_status=getattr(exc, 'status_code', None)) from exc
+                    raise CompetitorUnavailable(
+                        'Конкуренты временно недоступны. Цена оставлена без изменений.',
+                        cooldown_until=until,
+                        http_status=getattr(exc, 'status_code', None),
+                    ) from exc
 
 
 competitor_service = CompetitorService()

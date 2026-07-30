@@ -13,7 +13,7 @@
 
   qsa('form').forEach(form=>form.addEventListener('submit',()=>{const button=form.querySelector('button[type="submit"],button:not([type])');if(!button||button.dataset.noLoading)return;button.dataset.oldText=button.innerHTML;button.innerHTML='<span class="spinner"></span> Работаю…';button.disabled=true;setTimeout(()=>{button.innerHTML=button.dataset.oldText||'Готово';button.disabled=false},20000)}));
   qsa('[data-accordion]').forEach(trigger=>trigger.addEventListener('click',()=>trigger.closest('.accordion')?.classList.toggle('open')));
-  qsa('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{const target=qs(button.dataset.copy);try{await navigator.clipboard.writeText(target?.textContent.trim()||'');toast('Ссылка скопирована')}catch{toast('Скопируйте ссылку вручную')}}));
+  qsa('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{const direct=button.closest('[data-copy-text]')?.dataset.copyText||'';const target=button.dataset.copy?qs(button.dataset.copy):null;const text=direct||target?.textContent.trim()||'';try{await navigator.clipboard.writeText(text);toast('Скопировано')}catch{toast('Скопируйте вручную')}}));
 
   const selectedIds=()=>qsa('.product-check:checked').map(input=>input.value).filter(Boolean);
   const updateSelected=()=>{const count=selectedIds().length;qsa('[data-selected-count]').forEach(node=>node.textContent=String(count));const all=qs('[data-select-all]');const checks=qsa('.product-check');if(all&&checks.length){all.checked=count===checks.length;all.indeterminate=count>0&&count<checks.length}};

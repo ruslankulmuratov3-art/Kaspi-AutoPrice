@@ -226,6 +226,10 @@ class KaspiClient:
             return KaspiImportResponse(code=code, status=data.get('status'), description=data.get('description') or data.get('message'), raw=data)
         return KaspiImportResponse(code=f'local-{uuid.uuid4().hex[:12]}', raw=data)
 
+    def parse_offers_payload(self, data: Any) -> list[KaspiOffer]:
+        """Normalize a public-offers JSON payload received by the trusted local agent."""
+        return self._parse_offers(data)
+
     def _parse_offers(self, data: Any) -> list[KaspiOffer]:
         rows = []
         if isinstance(data, dict):

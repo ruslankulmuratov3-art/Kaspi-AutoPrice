@@ -5,13 +5,14 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models.alert import Alert, AlertType
-from app.models.autopilot import AutopilotJob, AutopilotJobItem, AutopilotJobStatus
+from app.models.autopilot import AutopilotJob, AutopilotJobItem, AutopilotJobStatus, CompetitorSnapshot
 from app.models.price_history import PriceHistory
 from app.models.product import Product, ProductStatus
 from app.models.store import Store
@@ -211,7 +212,24 @@ class AutoPilotService:
             db.close()
 
     def _product_ids(self, db: Session, job: AutopilotJob) -> list[int]:
-        query = db.query(Product).filter(Product.store_id == job.store_id, Product.auto_pricing_enabled == True, Product.status == ProductStatus.ACTIVE, Product.min_price > 0, Product.max_price > 0)
+        query = db.query(Product).filter(
+            Product.store_id == job.store_id,
+            Product.auto_pricing_enabled == True,
+            Product.status == ProductStatus.ACTIVE,
+            Product.min_price > 0,
+            Product.max_price > 0,
+        )
+        # A local-agent flush recalculates only products that received newer competitor data.
+        # This keeps each micro-batch fast while XML is still rebuilt from the full catalog.
+        if job.mode == 'local_agent_sync':
+            query = query.join(CompetitorSnapshot, CompetitorSnapshot.product_id == Product.id).filter(
+                CompetitorSnapshot.source == competitor_service.AGENT_SOURCE,
+                CompetitorSnapshot.fetched_at.isnot(None),
+                or_(
+                    Product.last_pricing_calculated_at.is_(None),
+                    CompetitorSnapshot.fetched_at > Product.last_pricing_calculated_at,
+                ),
+            )
         if settings.KASPI_AUTOPILOT_ONLY_IN_STOCK:
             query = query.filter(Product.stock != 0)
         if job.cursor_product_id:
@@ -358,6 +376,8 @@ class AutoPilotService:
                     'cache_state': decision.cache_state,
                 }
                 self._save_job_item(db, job, item)
+                product.last_pricing_calculated_at = datetime.utcnow()
+                db.add(product)
                 job.processed += 1
                 if item['status'] == 'error':
                     job.errors += 1
@@ -396,7 +416,7 @@ class AutoPilotService:
                 logger.exception('Autopilot product %s failed: %s', product_id, exc)
             finally:
                 db.close()
-            delay = max(0.0, float(settings.KASPI_AUTOPILOT_DELAY_SECONDS or 0))
+            delay = 0.0 if job.mode == 'local_agent_sync' else max(0.0, float(settings.KASPI_AUTOPILOT_DELAY_SECONDS or 0))
             if delay:
                 await asyncio.sleep(delay)
 

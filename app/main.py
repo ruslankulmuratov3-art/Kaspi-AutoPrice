@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.cors import CORSMiddleware
@@ -7,7 +7,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.web.router import web_router
 from app.core.config import settings
-from app.core.database import init_db
+from app.core.database import SessionLocal, init_db
 from app.core.logging import configure_logging, get_logger
 from app.services.autopilot_service import autopilot_service
 
@@ -35,6 +35,28 @@ def create_app() -> FastAPI:
     app.mount('/static', StaticFiles(directory='app/static'), name='static')
     app.include_router(web_router)
     app.include_router(api_router, prefix='/api')
+
+    @app.middleware('http')
+    async def viewer_access_guard(request: Request, call_next):
+        path = request.url.path
+        public_prefixes = (
+            '/static', '/login', '/register', '/auth/google', '/logout',
+            '/api/auth', '/api/local-agent', '/kaspi-feed', '/health',
+        )
+        if path == '/' or not path.startswith(public_prefixes):
+            from app.models.user import UserRole
+            from app.web.deps import current_user_optional
+            db = SessionLocal()
+            try:
+                user = current_user_optional(request, db)
+                if user and user.role == UserRole.VIEWER:
+                    if path == '/' or not path.startswith('/agent-setup'):
+                        if path.startswith('/api'):
+                            return JSONResponse(status_code=403, content={'detail': 'Viewer account has no operator access'})
+                        return RedirectResponse('/agent-setup', status_code=303)
+            finally:
+                db.close()
+        return await call_next(request)
 
     @app.on_event('startup')
     async def startup_event() -> None:
