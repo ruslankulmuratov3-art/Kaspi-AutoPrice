@@ -1,26 +1,3 @@
-Kaspi AutoPrice — auth/device admin patch
-
-Changed files:
-- README.md
-- .env.example
-- ACCESS_DEVICE_SETUP_RU.md
-- tests/test_access_devices.py
-- tests/test_agent_pairing_script.py
-- scripts/local_agent.py
-- app/main.py
-- app/services/access_service.py
-- app/services/google_oauth.py
-- app/templates/base.html
-- app/templates/login.html
-- app/templates/admin.html
-- app/templates/agent_setup.html
-- app/templates/register.html
-- app/models/user.py
-- app/models/__init__.py
-- app/models/access.py
-- app/web/router.py
-- app/core/schema_upgrade.py
-- app/core/config.py
-- app/static/js/app.js
-- app/static/css/style.css
-- app/api/routes/local_agent.py
+Hotfix: expose trusted local-agent API routes.
+Changed:
+- app/api/router.py
