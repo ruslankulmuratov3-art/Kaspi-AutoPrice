@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_NAME: str = 'Kaspi AutoPrice'
-    APP_VERSION: str = '5.0.0'
+    APP_VERSION: str = '5.1.0'
     ENVIRONMENT: str = 'local'
     DEBUG: bool = True
     ENABLE_DOCS: bool = True

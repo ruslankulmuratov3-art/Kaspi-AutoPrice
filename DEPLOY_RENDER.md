@@ -1,4 +1,4 @@
-# Render deploy — Kaspi AutoPrice v5
+# Render deploy — Kaspi AutoPrice v5.1
 
 ## Build
 
@@ -38,3 +38,7 @@ KASPI_XML_REBUILD_ON_PULL=false
 ```
 
 После deploy откройте `/automation`, затем `/xml-history`, создайте полный XML и проверьте production URL.
+
+## Важно после изменения локального кода
+
+Render не видит локальные файлы автоматически. После тестов обязательно выполните `git add .`, `git commit` и `git push`, затем дождитесь нового deploy. Локальная SQLite и production PostgreSQL содержат разные данные.

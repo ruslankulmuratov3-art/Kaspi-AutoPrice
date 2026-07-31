@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — Kaspi AutoPrice{% endblock %}
+{% block content %}
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">Товар</p>
+    <h1>{{ product.name }}</h1>
+    <p class="lead">{{ product.kaspi_sku }}{% if product.product_id %} · {{ product.product_id }}{% endif %}{% if product.url %} · <a class="link" href="{{ product.url }}" target="_blank">Kaspi</a>{% endif %}</p>
+  </div>
+  <div class="hero-actions">
+    <form method="post" action="/pricing/refresh/{{ product.id }}"><button class="btn btn-soft">Конкуренты</button></form>
+    <a class="btn btn-primary" href="/automation?store_id={{ product.store_id }}">Автопилот</a>
+  </div>
+</section>
+
+<section class="metrics">
+  <div class="metric premium-card"><span>Цена</span><strong>{{ product.current_price|money }}</strong></div>
+  <div class="metric premium-card"><span>Минимум</span><strong>{{ product.min_price|money }}</strong></div>
+  <div class="metric premium-card"><span>Максимум</span><strong>{{ product.max_price|money }}</strong></div>
+  <div class="metric premium-card"><span>Остаток</span><strong>{{ product.stock }}</strong></div>
+</section>
+
+<section class="grid-2">
+  <form class="premium-card form" method="post" action="/products/{{ product.id }}/settings">
+    <div class="card-head"><div><p class="eyebrow">Настройки</p><h2>Лимиты товара</h2></div><span class="badge {{ 'on' if product.auto_pricing_enabled else 'status-pending' }}">{{ 'вкл' if product.auto_pricing_enabled else 'выкл' }}</span></div>
+    <label>SKU<input name="kaspi_sku" value="{{ product.kaspi_sku }}" required></label>
+    <label>Название<input name="name" value="{{ product.name }}" required></label>
+    <label>Ссылка<input name="url" value="{{ product.url or '' }}"></label>
+    <div class="form-grid">
+      <label>Текущая цена<input name="current_price" type="number" value="{{ product.current_price|int }}"></label>
+      <label>Остаток<input name="stock" type="number" value="{{ product.stock or 0 }}"></label>
+      <label>Мин. цена<input name="min_price" type="number" value="{{ product.min_price|int }}"></label>
+      <label>Макс. цена<input name="max_price" type="number" value="{{ product.max_price|int }}"></label>
+      <label>Себестоимость<input name="cost_price" type="number" value="{{ product.cost_price|int }}"></label>
+      <label>Статус<select name="status"><option value="active" {% if product.status.value == 'active' %}selected{% endif %}>Активен</option><option value="paused" {% if product.status.value == 'paused' %}selected{% endif %}>Пауза</option><option value="out_of_stock" {% if product.status.value == 'out_of_stock' %}selected{% endif %}>Нет остатка</option><option value="archived" {% if product.status.value == 'archived' %}selected{% endif %}>Архив</option></select></label>
+    </div>
+    <label class="check-row"><input type="checkbox" name="auto_pricing_enabled" value="on" {% if product.auto_pricing_enabled %}checked{% endif %}> Включить автоцену</label>
+    {% set rule = product.pricing_rule %}
+    <div class="form-grid">
+      <label>Стратегия<select name="strategy"><option value="beat_by_step" {% if rule and rule.strategy.value == 'beat_by_step' %}selected{% endif %}>Ниже конкурента</option><option value="match_min" {% if rule and rule.strategy.value == 'match_min' %}selected{% endif %}>Сравнять с минимумом</option><option value="top_3_average" {% if rule and rule.strategy.value == 'top_3_average' %}selected{% endif %}>Средняя топ-3</option><option value="margin_protect" {% if rule and rule.strategy.value == 'margin_protect' %}selected{% endif %}>Защита маржи</option><option value="manual" {% if rule and rule.strategy.value == 'manual' %}selected{% endif %}>Ручной</option></select></label>
+      <label>Шаг, ₸<input name="beat_step" type="number" value="{{ (rule.beat_step if rule else 2)|int }}"></label>
+      <label>Макс. изменение, %<input name="max_change_percent_per_run" type="number" value="{{ (rule.max_change_percent_per_run if rule else 20)|int }}"></label>
+      <label>Мин. маржа, %<input name="min_margin_percent" type="number" value="{{ (rule.min_margin_percent if rule else 8)|int }}"></label>
+    </div>
+    <label>Игнорировать продавцов<textarea name="ignore_sellers" placeholder="Название продавца">{{ rule.ignore_sellers if rule else '' }}</textarea></label>
+    <button class="btn btn-primary">Сохранить</button>
+  </form>
+
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Конкуренты</p><h2>Последние цены</h2></div></div>
+    <div class="stack">
+      {% for o in product.competitor_offers %}
+      <div class="list-item"><div><b>#{{ o.position }} {{ o.seller_name }}</b><small>доставка {{ o.delivery_days }} дн.</small></div><span class="badge">{{ o.price|money }}</span></div>
+      {% endfor %}
+      {% if not product.competitor_offers %}<div class="empty-archive">Нажмите “Конкуренты”.</div>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="premium-card">
+  <div class="card-head"><div><p class="eyebrow">История</p><h2>Подтверждённые изменения</h2></div></div>
+  <div class="stack">
+    {% for h in confirmed_history %}
+    <div class="list-item"><div><b>{{ h.old_price|money }} → {{ h.new_price|money }}</b><small>{{ h.reason }}</small></div><span>{{ h.created_at }}</span></div>
+    {% endfor %}
+    {% if not confirmed_history %}<div class="empty-archive">Пока нет изменений.</div>{% endif %}
+  </div>
+</section>
+{% endblock %}

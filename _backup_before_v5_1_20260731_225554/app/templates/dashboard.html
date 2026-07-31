@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Обзор — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">Обзор</p>
+    <h1>Автопрайс Kaspi</h1>
+    <p class="lead">ACTIVE.xlsx загружается один раз. Дальше автопилот готовит XML, а Kaspi забирает его по ссылке.</p>
+  </div>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Загрузить ACTIVE.xlsx</a>
+    <a class="btn btn-soft" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Автопилот</a>
+  </div>
+</section>
+
+<section class="premium-card store-focus">
+  <div>
+    <p class="eyebrow">Магазин</p>
+    <h2>{{ selected_store.name if selected_store else 'Магазин не выбран' }}</h2>
+    <p class="muted">Товары, лимиты и XML хранятся отдельно по каждому магазину.</p>
+  </div>
+  {% if stores %}
+  <form method="get" class="inline-form">
+    <select name="store_id" onchange="this.form.submit()">
+      {% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
+    </select>
+  </form>
+  {% else %}
+  <a class="btn btn-primary" href="/stores">Добавить магазин</a>
+  {% endif %}
+</section>
+
+<section class="metrics">
+  <div class="metric premium-card"><span>Товары</span><strong>{{ metrics.products if metrics and metrics.products is defined else 0 }}</strong><small>в базе</small></div>
+  <div class="metric premium-card"><span>Готовы</span><strong>{{ ready_count|default(0) }}</strong><small>к автопилоту</small></div>
+  <div class="metric premium-card"><span>Настроить</span><strong>{{ pending_count|default(0) }}</strong><small>без лимитов</small></div>
+  <div class="metric premium-card"><span>Средняя цена</span><strong>{{ metrics.avg_price|money if metrics and metrics.avg_price is defined else '0 ₸' }}</strong><small>локально</small></div>
+</section>
+
+<section class="grid-2">
+  <div class="premium-card">
+    <div class="card-head">
+      <div><p class="eyebrow">Быстрые действия</p><h2>Рабочий поток</h2></div>
+    </div>
+    <div class="grid-2">
+      <a class="btn btn-primary" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Импорт товаров</a>
+      <a class="btn btn-soft" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Лимиты</a>
+      <a class="btn btn-soft" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть XML</a>
+      <a class="btn btn-soft" href="/xml-history{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">История XML</a>
+    </div>
+  </div>
+
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Последние товары</p><h2>Каталог</h2></div><a class="btn btn-small" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Все</a></div>
+    <div class="stack">
+      {% for p in products %}
+      <a class="list-item" href="/products/{{ p.id }}"><span><b>{{ p.name }}</b><small>{{ p.kaspi_sku }}</small></span><span class="badge {{ 'on' if p.auto_pricing_enabled else 'status-pending' }}">{{ p.current_price|money }}</span></a>
+      {% endfor %}
+      {% if not products %}<div class="empty-archive">Загрузите ACTIVE.xlsx.</div>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="premium-card">
+  <div class="card-head">
+    <div><p class="eyebrow">Архив</p><h2>Последние файлы</h2></div>
+    <a class="btn btn-small" href="/price-lists{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Открыть</a>
+  </div>
+  <div class="archive-grid">
+    {% for item in recent_price_lists %}
+    <div class="archive-item">
+      <div><b>{{ item.filename }}</b><small>{{ item.created_at }} · {{ item.size_label }}</small></div>
+      <div class="archive-stats"><span>товаров <b>{{ item.processed_products }}</b></span><span>цен <b>{{ item.changed }}</b></span></div>
+      <a class="btn btn-small" href="/price-lists/download/{{ item.id }}">Скачать</a>
+    </div>
+    {% endfor %}
+    {% if not recent_price_lists %}<div class="empty-archive">Файлов пока нет.</div>{% endif %}
+  </div>
+</section>
+{% endblock %}

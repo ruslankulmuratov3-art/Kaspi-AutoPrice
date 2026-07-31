@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Kaspi AutoPrice{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css?v=5">
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#111827">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+</head>
+<body>
+<div class="mobile-overlay" data-menu-overlay></div>
+<div class="app-shell">
+  {% if user %}
+  <aside class="sidebar" aria-label="Меню">
+    <a class="brand" href="/dashboard">
+      <span class="brand-mark">K</span>
+      <span><b>Kaspi AutoPrice</b><small>XML autopilot</small></span>
+    </a>
+    <nav class="nav">
+      <a href="/dashboard" class="nav-link">Обзор</a>
+      <a href="/stores" class="nav-link">Магазины</a>
+      <a href="/products" class="nav-link">Товары</a>
+      <a href="/automation" class="nav-link">Автопилот</a>
+      <a href="/xml-history" class="nav-link">XML</a>
+      <a href="/history" class="nav-link">История</a>
+      <a href="/price-lists" class="nav-link">Архив</a>
+      <a href="/settings" class="nav-link">Настройки</a>
+    </nav>
+  </aside>
+  {% endif %}
+
+  <main class="main">
+    {% if user %}
+    <header class="topbar">
+      <button class="mobile-menu" type="button" aria-label="Открыть меню">☰</button>
+      <div class="topbar-title">
+        <small>Панель</small>
+        <b>{{ user.display_name if user.display_name else 'admin' }}</b>
+      </div>
+      <div class="top-actions">
+        <a class="btn btn-soft" href="/products">Товары</a>
+        <a class="btn btn-primary" href="/automation">Автопилот</a>
+        <form method="post" action="/logout"><button class="btn btn-ghost" type="submit">Выйти</button></form>
+      </div>
+    </header>
+    {% endif %}
+
+    <div class="content-wrap">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+<script src="/static/js/app.js?v=5"></script>
+<div class="toast-stack" aria-live="polite"></div>
+</body>
+</html>

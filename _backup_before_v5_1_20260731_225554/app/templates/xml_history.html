@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}XML — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero-card reveal">
+  <div><p class="eyebrow">XML</p><h1>Каталог для Kaspi</h1><p class="lead">Активная версия, отклонённые сборки, сравнение цен и журнал запросов.</p></div>
+  <div class="hero-actions"><a class="btn btn-primary" href="/automation?store_id={{ selected_store_id }}">Автопилот</a>{% if feed_url %}<a class="btn btn-soft" href="{{ feed_url }}" target="_blank">Открыть XML</a>{% endif %}</div>
+</section>
+{% if message %}<div class="notice success toast-auto">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger toast-auto">{{ error }}</div>{% endif %}
+
+<section class="premium-card reveal delay-1">
+  <div class="card-head"><div><p class="eyebrow">Ссылка для кабинета</p><h2>Production HTTPS</h2></div><span class="badge on">Безопасная</span></div>
+  <div class="copy-box"><code id="xml-production-url">{{ feed_url }}</code><button class="btn btn-small" type="button" data-copy="#xml-production-url">Копировать</button></div>
+  <p class="small-note success-text">Эту ссылку добавляйте в Kaspi.</p>
+  {% if is_local %}<details class="compact-details"><summary>Локальный просмотр</summary><div class="copy-box"><code>{{ local_feed_url }}</code></div><p class="muted">Работает только на этом компьютере и не подходит для кабинета Kaspi.</p></details>{% endif %}
+</section>
+
+<section class="premium-card reveal delay-1">
+  <form class="form-grid" method="get" action="/xml-history">
+    <label>Магазин<select name="store_id" onchange="this.form.submit()">{% for store in stores %}<option value="{{ store.id }}" {% if store.id == selected_store_id %}selected{% endif %}>{{ store.name }} · {{ store.merchant_id }}</option>{% endfor %}</select></label>
+    <label>Версия<select name="feed_id" onchange="this.form.submit()" {% if not versions %}disabled{% endif %}>{% if not versions %}<option>XML ещё не создавался</option>{% endif %}{% for version in versions %}<option value="{{ version.feed_id }}" {% if version.feed_id == selected_feed_id %}selected{% endif %}>{{ version.updated_at }} · {{ version.product_count }} товаров · {{ {'active':'Активен','rejected':'Отклонён','archived':'Архив','candidate':'Проверяется'}.get(version.status,version.status) }}</option>{% endfor %}</select></label>
+  </form>
+</section>
+
+{% if not versions %}
+<section class="premium-card empty-state-large reveal delay-2">
+  <div class="empty-icon">XML</div><h2>XML ещё не создавался</h2><p>Создайте первую полную версию каталога. Она появится здесь только после проверки количества товаров, SKU, цен и структуры.</p>
+  <form method="post" action="/xml-history/create"><input type="hidden" name="store_id" value="{{ selected_store_id }}"><button class="btn btn-primary">Создать полный XML</button></form>
+</section>
+{% else %}
+<section class="grid-2 reveal delay-2">
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Версии</p><h2>История XML</h2></div><span class="badge">{{ versions|length }}</span></div>
+    <div class="mini-timeline version-list">
+      {% for version in versions %}
+      <div class="timeline-row version-row {{ 'active-version' if version.is_active else '' }}">
+        <a class="version-main" href="/xml-history?store_id={{ selected_store_id }}&feed_id={{ version.feed_id }}">
+          <b>{{ version.updated_at }}</b><span>{{ version.product_count }} товаров · {{ version.changed }} изменённых цен</span>
+          <small>{{ (version.size_bytes / 1024)|round(1) }} KB · {{ {'active':'Активен','rejected':'Отклонён','archived':'Архив','candidate':'Проверяется'}.get(version.status,version.status) }} · {{ version.source or 'manual' }}{% if version.job_id %} · job #{{ version.job_id }}{% endif %}</small>
+          {% if version.rejection_reason %}<small class="danger-text">{{ version.rejection_reason }}</small>{% endif %}
+        </a>
+        <div class="version-actions"><a class="btn btn-small" href="/xml-history/download/{{ selected_store_id }}/{{ version.feed_id }}">Скачать</a>{% if not version.is_active and version.status != 'rejected' %}<form method="post" action="/xml-history/activate"><input type="hidden" name="store_id" value="{{ selected_store_id }}"><input type="hidden" name="feed_id" value="{{ version.feed_id }}"><button class="btn btn-small btn-soft">Активировать</button></form>{% endif %}</div>
+      </div>{% endfor %}
+    </div>
+  </div>
+
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Запросы</p><h2>Кто открывал XML</h2></div><span class="badge">{{ pulls|length }}</span></div>
+    <div class="mini-timeline">
+      {% for pull in pulls %}<div class="timeline-row"><b>{{ pull.accessed_at }}</b><span>{{ 'Похож на запрос Kaspi' if pull.likely_kaspi else ('Браузер пользователя' if 'Mozilla' in pull.user_agent else 'Неизвестный клиент') }}</span><small>{{ pull.ip or 'IP не указан' }} · HTTP {{ pull.response_status }} · {{ pull.user_agent[:90] or 'User-Agent не указан' }}</small></div>{% endfor %}
+      {% if not pulls %}<div class="empty-archive"><b>Запросов пока нет</b><p>Открытие ссылки будет записано здесь. Сам запрос XML не запускает тяжёлый расчёт.</p></div>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="grid-2 reveal delay-3">
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Сравнение</p><h2>Что изменилось</h2></div></div>
+    <div class="compare-metrics"><span><small>Цены</small><b>{{ comparison.changed|length }}</b></span><span><small>Добавлено</small><b>{{ comparison.added|length }}</b></span><span><small>Удалено</small><b>{{ comparison.removed|length }}</b></span></div>
+    {% for item in comparison.changed[:20] %}<div class="compare-row"><b>{{ item.name or item.sku }}</b><span>{{ item.old }} → {{ item.new }} ₸</span></div>{% endfor %}
+    {% if not comparison.changed and not comparison.added and not comparison.removed %}<p class="muted">Это первая версия или отличий с предыдущей версией нет.</p>{% endif %}
+  </div>
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Выбранная версия</p><h2>{{ selected_version.feed_id if selected_version else '—' }}</h2></div>{% if selected_version %}<span class="badge {{ 'on' if selected_version.is_active else '' }}">{{ selected_version.status }}</span>{% endif %}</div>
+    {% if selected_version %}<div class="version-summary"><span><small>Товаров</small><b>{{ selected_version.product_count }}</b></span><span><small>Изменено</small><b>{{ selected_version.changed }}</b></span><span><small>Ошибок</small><b>{{ selected_version.errors }}</b></span><span><small>Размер</small><b>{{ (selected_version.size_bytes/1024)|round(1) }} KB</b></span></div>{% endif %}
+  </div>
+</section>
+
+<section class="premium-card reveal delay-4">
+  <div class="card-head"><div><p class="eyebrow">Цены</p><h2>Детали выбранной версии</h2></div>{% if selected_version %}<a class="btn btn-small" href="/xml-history/download/{{ selected_store_id }}/{{ selected_version.feed_id }}">Скачать XML</a>{% endif %}</div>
+  {% if details %}<div class="table-wrap"><table><thead><tr><th>Товар</th><th>SKU</th><th>Было</th><th>В XML</th><th>Конкурент</th><th>Источник</th><th>Причина</th></tr></thead><tbody>{% for item in details %}<tr class="{{ 'changed-row' if item.changed else '' }}"><td><b>{{ item.name }}</b><small>{{ item.status }}</small></td><td><code>{{ item.sku }}</code></td><td>{{ item.old_price }} ₸</td><td><b>{{ item.new_price }} ₸</b></td><td>{{ item.competitor_price or '—' }}{% if item.competitor_seller %}<small>{{ item.competitor_seller }}</small>{% endif %}</td><td><small>{{ item.source_device or item.cache_state or item.data_source or '—' }}</small></td><td><small>{{ item.reason }}</small></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty-archive">У этой версии нет детального списка цен.</div>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

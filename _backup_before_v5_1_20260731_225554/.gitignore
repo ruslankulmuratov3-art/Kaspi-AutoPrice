@@ -1,0 +1,17 @@
+.env
+.env_*
+.env.*
+!.env.example
+.venv/
+.idea/
+__pycache__/
+*.py[cod]
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.pytest_cache/
+storage/
+*.xlsx
+*.xls
+*.zip

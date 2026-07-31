@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Архив — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">Архив</p>
+    <h1>Файлы</h1>
+    <p class="lead">XML и Excel-файлы, которые были созданы системой.</p>
+  </div>
+  <a class="btn btn-primary" href="/products{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">К товарам</a>
+</section>
+
+{% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+
+<section class="premium-card">
+  <form class="searchbar" method="get">
+    <select name="store_id">
+      <option value="">Все магазины</option>
+      {% for s in stores %}<option value="{{ s.id }}" {% if selected_store_id == s.id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-soft">Показать</button>
+  </form>
+</section>
+
+<section class="premium-card">
+  <div class="card-head"><div><p class="eyebrow">Список</p><h2>Сохранённые файлы</h2></div><span class="badge">{{ records|length }}</span></div>
+  <div class="archive-grid">
+    {% for item in records %}
+    <article class="archive-item">
+      <div>
+        <b>{{ item.filename }}</b>
+        <small>{{ item.store_name }} · {{ item.created_at }} · {{ item.size_label }}</small>
+      </div>
+      <div class="archive-stats">
+        <span>строк <b>{{ item.total_rows }}</b></span>
+        <span>товаров <b>{{ item.processed_products }}</b></span>
+        <span>цен <b>{{ item.changed }}</b></span>
+      </div>
+      <div class="archive-actions">
+        <a class="btn btn-small btn-primary" href="/price-lists/download/{{ item.id }}">Скачать</a>
+        <a class="btn btn-small" href="/products{% if item.store_id %}?store_id={{ item.store_id }}{% endif %}">Товары</a>
+      </div>
+    </article>
+    {% endfor %}
+    {% if not records %}<div class="empty-archive">Файлов пока нет.</div>{% endif %}
+  </div>
+</section>
+{% endblock %}

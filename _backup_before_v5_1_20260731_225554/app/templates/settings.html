@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Настройки — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero-card reveal">
+  <div><p class="eyebrow">Настройки</p><h1>Диагностика проекта</h1><p class="lead">Показывает состояние текущей базы. Локальная SQLite и PostgreSQL Render являются разными базами.</p></div>
+  <span class="badge {{ 'on' if is_production else '' }}">{{ environment_label }}</span>
+</section>
+
+<section class="premium-card reveal delay-1">
+  <form method="get" action="/settings" class="form-grid">
+    <label>Магазин<select name="store_id" onchange="this.form.submit()">{% for store in stores %}<option value="{{ store.id }}" {% if store.id == selected_store_id %}selected{% endif %}>{{ store.name }} · {{ store.merchant_id }}</option>{% endfor %}</select></label>
+    <div class="environment-card"><small>База</small><b>{{ database_kind }}</b><span>{{ production_base }}</span></div>
+  </form>
+</section>
+
+<section class="diagnostic-grid reveal delay-2">
+  {% for label, value, note in [
+    ('Всего товаров', stats.total, 'в выбранной базе'),
+    ('Активных', stats.active, 'статус active'),
+    ('Готово к расчёту', stats.ready, 'есть лимиты и остаток'),
+    ('Отключено / архив', stats.archived, 'не участвуют'),
+    ('Без SKU', stats.no_sku, 'нельзя добавить в XML'),
+    ('Без public product ID', stats.no_public_id, 'нельзя получить конкурентов'),
+    ('Без корректных лимитов', stats.no_limits, 'min/max требуют проверки'),
+    ('Без остатка', stats.out_of_stock, 'stock ≤ 0'),
+    ('Дубликаты SKU', stats.duplicate_skus, 'проверить перед XML'),
+    ('Дубликаты product ID', stats.duplicate_product_ids, 'могут быть вариантами товара')
+  ] %}
+  <div class="premium-card diagnostic-card"><span>{{ label }}</span><strong>{{ value }}</strong><small>{{ note }}</small></div>
+  {% endfor %}
+</section>
+
+<section class="grid-2 reveal delay-3">
+  <div class="premium-card"><div class="card-head"><div><p class="eyebrow">Проверка</p><h2>Дубликаты SKU</h2></div><span class="badge">{{ duplicate_skus|length }}</span></div>{% if duplicate_skus %}<div class="mini-timeline">{% for sku,count in duplicate_skus %}<div class="timeline-row"><code>{{ sku }}</code><b>{{ count }} записей</b></div>{% endfor %}</div>{% else %}<div class="empty-archive">Дубликаты SKU не найдены.</div>{% endif %}</div>
+  <div class="premium-card"><div class="card-head"><div><p class="eyebrow">Проверка</p><h2>Дубликаты product ID</h2></div><span class="badge">{{ duplicate_product_ids|length }}</span></div>{% if duplicate_product_ids %}<div class="mini-timeline">{% for pid,count in duplicate_product_ids %}<div class="timeline-row"><code>{{ pid }}</code><b>{{ count }} записей</b></div>{% endfor %}</div>{% else %}<div class="empty-archive">Дубликаты product ID не найдены.</div>{% endif %}</div>
+</section>
+
+<section class="premium-card reveal delay-4"><div class="card-head"><div><p class="eyebrow">Важно</p><h2>Почему локально 1483, а на Render 1484</h2></div></div><p class="muted">Это не одна общая база. Сравните показатели этой страницы локально и на Render. Сервис ничего не удаляет автоматически: сначала найдите лишнюю запись, дубликат или товар с другим статусом.</p></section>
+{% endblock %}

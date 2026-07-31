@@ -231,11 +231,18 @@ class IncrementalPricingService:
     async def _debounced_rebuild(self, store_id: int) -> None:
         try:
             await asyncio.sleep(max(2, int(settings.HELPER_XML_DEBOUNCE_SECONDS or 20)))
-            await asyncio.to_thread(self.rebuild_xml_now, store_id)
+            # Do not let the helper write a product while a full XML version is being
+            # committed in local SQLite. PostgreSQL also gets a predictable ordering.
+            async with self._lock(int(store_id)):
+                await asyncio.to_thread(self.rebuild_xml_now, int(store_id))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.exception('Debounced XML rebuild failed for store %s: %s', store_id, exc)
+
+    async def rebuild_xml_serialized(self, store_id: int, *, finish_job: bool = False) -> dict[str, Any]:
+        async with self._lock(int(store_id)):
+            return await asyncio.to_thread(self.rebuild_xml_now, int(store_id), finish_job=finish_job)
 
     def rebuild_xml_now(self, store_id: int, *, finish_job: bool = False) -> dict[str, Any]:
         db = SessionLocal()

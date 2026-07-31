@@ -256,7 +256,7 @@ async def helper_complete(token: str, request: Request, db: Session = Depends(ge
     db.add(session)
     db.commit()
     store_id = int(session.store_id)
-    record = await asyncio.to_thread(incremental_pricing_service.rebuild_xml_now, store_id, finish_job=True)
+    record = await incremental_pricing_service.rebuild_xml_serialized(store_id, finish_job=True)
     return {'ok': True, 'status': session.status, 'xml': record}
 
 

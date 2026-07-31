@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
         if request.url.path.startswith('/api'):
             return JSONResponse(status_code=500, content={'detail': 'Internal server error'})
         from app.web.templating import templates
-        return templates.TemplateResponse('error.html', {'request': request, 'error': str(exc)}, status_code=500)
+        return templates.TemplateResponse('error.html', {'request': request, 'error': autopilot_service._friendly_error(exc)}, status_code=500)
 
     return app
 

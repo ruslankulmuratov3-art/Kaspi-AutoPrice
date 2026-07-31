@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,12 @@ class XmlFeedService:
 
     def __init__(self) -> None:
         self.ROOT.mkdir(parents=True, exist_ok=True)
+        self._store_locks: dict[int, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
+
+    def _store_lock(self, store_id: int) -> threading.RLock:
+        with self._locks_guard:
+            return self._store_locks.setdefault(int(store_id), threading.RLock())
 
     @staticmethod
     def _now() -> str:
@@ -161,6 +168,7 @@ class XmlFeedService:
         warehouse_id: str = '',
         processed: int = 0,
         changed: int = 0,
+        unchanged: int = 0,
         skipped: int = 0,
         queued: int = 0,
         errors: int = 0,
@@ -169,50 +177,112 @@ class XmlFeedService:
         details: list[dict] | None = None,
         source: str = 'manual',
         job_id: int | None = None,
+        db: Session | None = None,
+        commit: bool = True,
+        write_file: bool = True,
     ) -> dict[str, Any]:
+        """Create a validated full XML version.
+
+        ``db`` is optional so the autopilot can save the XML in the *same* transaction as
+        its job finalisation. The old implementation opened a second SQLite Session while
+        the first Session already held a write lock, which caused ``database is locked`` at
+        99.9%. PostgreSQL also benefits from the single-transaction path.
+        """
         products_list = list(products)
-        xml_text, product_count = self.build_xml(store=store, products=products_list, price_by_sku=price_by_sku, warehouse_id=warehouse_id)
+        xml_text, product_count = self.build_xml(
+            store=store,
+            products=products_list,
+            price_by_sku=price_by_sku,
+            warehouse_id=warehouse_id,
+        )
         feed_id = self._feed_id()
-        expected_count = len([p for p in products_list if p.kaspi_sku and float(p.current_price or 0) > 0])
-        db = SessionLocal()
+        expected_count = len([
+            product
+            for product in products_list
+            if product.kaspi_sku and float(product.current_price or 0) > 0
+        ])
+        owns_session = db is None
+        session = db or SessionLocal()
+        store_id = int(store.id)
         try:
-            previous = self.active_version(db, int(store.id))
-            valid, rejection = self._validate(count=product_count, expected_count=expected_count, previous_count=int(previous.product_count or 0) if previous else 0)
-            version = XmlFeedVersion(
-                feed_id=feed_id,
-                store_id=int(store.id),
-                status=XmlFeedStatus.CANDIDATE.value if valid else XmlFeedStatus.REJECTED.value,
-                filename=f'kaspi_store_{int(store.id)}.xml',
-                merchant_id=str(store.merchant_id or ''),
-                warehouse_id=warehouse_id or settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1',
-                xml_text=xml_text,
-                details_json=json.dumps(details or [], ensure_ascii=False),
-                product_count=product_count,
-                expected_count=expected_count,
-                changed_count=int(changed or 0),
-                unchanged_count=int(skipped or 0),
-                skipped_count=int(skipped or 0),
-                queued_count=int(queued or 0),
-                error_count=int(errors or 0),
-                size_bytes=len(xml_text.encode('utf-8')),
-                rejection_reason=rejection,
-                is_active=False,
-                source=str(source or 'manual')[:80],
-                job_id=int(job_id) if job_id else None,
-            )
-            db.add(version)
-            db.flush()
-            if valid:
-                db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store.id), XmlFeedVersion.is_active == True).update(
-                    {'is_active': False, 'status': XmlFeedStatus.ARCHIVED.value}, synchronize_session=False
+            with self._store_lock(store_id):
+                previous = self.active_version(session, store_id)
+                valid, rejection = self._validate(
+                    count=product_count,
+                    expected_count=expected_count,
+                    previous_count=int(previous.product_count or 0) if previous else 0,
                 )
-                version.is_active = True
-                version.status = XmlFeedStatus.ACTIVE.value
-                self._write_active_file(int(store.id), xml_text)
-            db.commit()
-            return self._record(version, processed=processed, limit_count=limit_count, q_filter=q_filter)
+                version = XmlFeedVersion(
+                    feed_id=feed_id,
+                    store_id=store_id,
+                    status=XmlFeedStatus.CANDIDATE.value if valid else XmlFeedStatus.REJECTED.value,
+                    filename=f'kaspi_store_{store_id}.xml',
+                    merchant_id=str(store.merchant_id or ''),
+                    warehouse_id=warehouse_id or settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1',
+                    xml_text=xml_text,
+                    details_json=json.dumps(details or [], ensure_ascii=False),
+                    product_count=product_count,
+                    expected_count=expected_count,
+                    changed_count=int(changed or 0),
+                    unchanged_count=int(unchanged or 0),
+                    skipped_count=int(skipped or 0),
+                    queued_count=int(queued or 0),
+                    error_count=int(errors or 0),
+                    size_bytes=len(xml_text.encode('utf-8')),
+                    rejection_reason=rejection,
+                    is_active=False,
+                    source=str(source or 'manual')[:80],
+                    job_id=int(job_id) if job_id else None,
+                )
+                session.add(version)
+                session.flush()
+                if valid:
+                    session.query(XmlFeedVersion).filter(
+                        XmlFeedVersion.store_id == store_id,
+                        XmlFeedVersion.is_active == True,
+                        XmlFeedVersion.id != version.id,
+                    ).update(
+                        {'is_active': False, 'status': XmlFeedStatus.ARCHIVED.value},
+                        synchronize_session=False,
+                    )
+                    version.is_active = True
+                    version.status = XmlFeedStatus.ACTIVE.value
+                    session.add(version)
+                    session.flush()
+                if commit:
+                    session.commit()
+                record = self._record(
+                    version,
+                    processed=processed,
+                    limit_count=limit_count,
+                    q_filter=q_filter,
+                )
+                # The HTTP feed is served from PostgreSQL/SQLite, so a filesystem failure
+                # must never invalidate a committed database version. The local file is only
+                # a convenient mirror.
+                if valid and write_file and commit:
+                    try:
+                        self._write_active_file(store_id, xml_text)
+                    except OSError:
+                        pass
+                return record
+        except Exception:
+            if commit:
+                session.rollback()
+            raise
         finally:
-            db.close()
+            if owns_session:
+                session.close()
+
+    def sync_active_file(self, store_id: int) -> None:
+        """Best-effort mirror of the active DB XML to local storage."""
+        xml_text = self.get_xml_text(int(store_id))
+        if not xml_text:
+            return
+        try:
+            self._write_active_file(int(store_id), xml_text)
+        except OSError:
+            pass
 
     def rebuild_current(self, store_id: int, *, source: str = 'manual', job_id: int | None = None, details: list[dict] | None = None) -> dict[str, Any]:
         db = SessionLocal()
@@ -234,7 +304,9 @@ class XmlFeedService:
             price_by_sku=price_by_sku,
             warehouse_id=settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1',
             changed=sum(1 for x in (details or []) if x.get('changed')),
-            skipped=sum(1 for x in (details or []) if not x.get('changed')),
+            unchanged=sum(1 for x in (details or []) if x.get('status') == 'unchanged'),
+            skipped=sum(1 for x in (details or []) if x.get('status') not in ('changed', 'unchanged', 'error', 'queued')),
+            queued=sum(1 for x in (details or []) if x.get('status') == 'queued'),
             errors=sum(1 for x in (details or []) if x.get('status') == 'error'),
             details=details or [],
             source=source,
@@ -254,6 +326,7 @@ class XmlFeedService:
             'product_count': version.product_count,
             'expected_count': version.expected_count,
             'changed': version.changed_count,
+            'unchanged': version.unchanged_count,
             'skipped': version.skipped_count,
             'queued': version.queued_count,
             'errors': version.error_count,

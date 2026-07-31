@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Автопилот — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero-card reveal">
+  <div>
+    <p class="eyebrow">Автопилот</p>
+    <h1>Цены под контролем</h1>
+    <p class="lead">Свежие конкуренты рассчитываются по одному товару, а полный XML публикуется только после проверки.</p>
+  </div>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="/xml-history?store_id={{ selected_store_id or '' }}">Управление XML</a>
+    <a class="btn btn-soft" href="/history">История цен</a>
+  </div>
+</section>
+
+{% if message %}<div class="notice success toast-auto">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger toast-auto">{{ error }}</div>{% endif %}
+{% if recovery_notice %}<div class="notice info toast-auto">Задание действительно восстановлено после перезапуска и продолжает работу с сохранённого места.</div>{% endif %}
+
+<section class="grid-2 reveal delay-1">
+  <form class="premium-card form" method="get" action="/automation">
+    <div class="card-head">
+      <div><p class="eyebrow">Магазин</p><h2>{{ selected_store.name if selected_store else 'Не выбран' }}</h2></div>
+      <span class="badge">{{ active_count }} товаров</span>
+    </div>
+    <label>Выбрать магазин
+      <select name="store_id" onchange="this.form.submit()">
+        {% for store in stores %}<option value="{{ store.id }}" {% if store.id == selected_store_id %}selected{% endif %}>{{ store.name }} · {{ store.merchant_id }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+
+  <div class="premium-card">
+    <div class="card-head">
+      <div><p class="eyebrow">Kaspi XML</p><h2>Публичная ссылка</h2></div>
+      <span class="badge {{ 'on' if feed_record else '' }}">{{ 'Активен' if feed_record else 'Ещё не создан' }}</span>
+    </div>
+    <div class="copy-box"><code id="feed-url">{{ production_feed_url }}</code><button class="btn btn-small" type="button" data-copy="#feed-url">Копировать</button></div>
+    <p class="small-note success-text">Эту HTTPS-ссылку нужно указывать в кабинете Kaspi.</p>
+    {% if is_local %}
+      <details class="compact-details"><summary>Локальный адрес для проверки</summary><div class="copy-box"><code>{{ local_feed_url }}</code></div><p class="muted small-note">Работает только на этом компьютере и не подходит для Kaspi.</p></details>
+    {% endif %}
+    {% if not public_base_valid %}<div class="notice danger compact">PUBLIC_BASE_URL настроен неверно. В production разрешён только публичный HTTPS-адрес.</div>{% endif %}
+  </div>
+</section>
+
+<section class="metrics metrics-clean reveal delay-2" data-live-dashboard data-store-id="{{ selected_store_id or 0 }}">
+  <div class="metric premium-card"><span>Готово к расчёту</span><strong>{{ ready_count }}</strong><small>активных товаров с лимитами</small></div>
+  <div class="metric premium-card"><span>Свежие конкуренты</span><strong data-metric="snapshots">{{ fresh_snapshots }}</strong><small>сохранено в PostgreSQL</small></div>
+  <div class="metric premium-card"><span>Активный XML</span><strong data-metric="feed-products">{{ feed_record.product_count if feed_record else 0 }}</strong><small>из {{ active_count }} активных товаров</small></div>
+  <div class="metric premium-card"><span>Источник данных</span><strong class="metric-status" data-metric="source-state">{{ 'Помощник / кэш' if competitor_state.mode == 'local_agent' else ('Пауза' if competitor_state.state == 'open' else 'Доступен') }}</strong><small data-metric="source-note">{{ 'прямой Render-запрос выключен' if competitor_state.mode == 'local_agent' else 'безопасная проверка' }}</small></div>
+</section>
+
+<section class="premium-card reveal delay-3">
+  <div class="card-head">
+    <div><p class="eyebrow">Расчёт</p><h2>Статус автопилота</h2></div>
+    {% set job_status = autopilot_status.status if autopilot_status else 'idle' %}
+    <span class="badge {% if job_status == 'running' %}on pulse{% elif job_status in ['error','cancelled'] %}hot{% endif %}" data-job-badge>{{ {'queued':'В очереди','running':'Работает','paused':'Пауза','done':'Готово','error':'Ошибка','cancelled':'Отменено'}.get(job_status, 'Ожидает') }}</span>
+  </div>
+
+  <div class="progress-panel" data-job-panel>
+    <div class="progress-head"><b><span data-job-processed>{{ autopilot_status.processed_now if autopilot_status else 0 }}</span> / <span data-job-total>{{ autopilot_status.total if autopilot_status else 0 }}</span></b><span data-job-percent>{{ autopilot_status.percent if autopilot_status else 0 }}%</span></div>
+    <div class="progress-track"><i data-job-bar style="width: {{ autopilot_status.percent if autopilot_status else 0 }}%"></i></div>
+    <div class="job-stats job-stat-links">
+      <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=changed{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Изменено</span><b data-job-changed>{{ autopilot_status.changed if autopilot_status else 0 }}</b></a>
+      <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=unchanged{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Без изменений</span><b data-job-unchanged>{{ autopilot_status.unchanged if autopilot_status else 0 }}</b></a>
+      <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=skipped{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Пропущено</span><b data-job-skipped>{{ autopilot_status.skipped if autopilot_status else 0 }}</b></a>
+      <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=error{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Ошибки</span><b data-job-errors>{{ autopilot_status.errors if autopilot_status else 0 }}</b></a>
+      <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=queued{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>В безопасной очереди</span><b data-job-queued>{{ autopilot_status.queued if autopilot_status else 0 }}</b></a>
+    </div>
+    {% if autopilot_status and autopilot_status.error %}<div class="notice danger compact"><b>Расчёт остановился из-за ошибки</b><p>{{ autopilot_status.error }}</p></div>{% endif %}
+  </div>
+
+  <div class="grid-2 action-grid">
+    <form method="post" action="/automation/run-now" class="form">
+      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+      <div class="form-grid">
+        <label>Склад<input name="warehouse_id" value="{{ feed_record.warehouse_id if feed_record else 'PP1' }}"></label>
+        <label>Товаров за запуск<input name="limit_count" type="number" value="0" min="0" max="5000"><small>0 — все</small></label>
+        <label>Фильтр<input name="q_filter" placeholder="Название или SKU"></label>
+      </div>
+      <button class="btn btn-primary">Запустить полный расчёт</button>
+    </form>
+
+    <div class="form control-stack">
+      <form method="post" action="/automation/stop"><input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}"><button class="btn btn-danger btn-wide" data-no-loading="1">Остановить безопасно</button></form>
+      <form method="post" action="/automation/cancel-active" onsubmit="return confirm('Сбросить только зависшее или ошибочное задание? Товары, кэш, цены и XML сохранятся.')"><input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}"><button class="btn btn-soft btn-wide" data-no-loading="1">Сбросить зависшее задание</button></form>
+      {% if latest_job and latest_job.status.value in ['paused','error','cancelled'] %}<form method="post" action="/automation/resume"><input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}"><input type="hidden" name="job_id" value="{{ latest_job.id }}"><button class="btn btn-soft btn-wide">Продолжить с сохранённого места</button></form>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="grid-2 reveal delay-4">
+  <div class="premium-card helper-create-card">
+    <div class="card-head"><div><p class="eyebrow">Телефон</p><h2>Ускорить проверку</h2></div><span class="badge">Без кодов</span></div>
+    <p class="muted">Создайте временную ссылку. На телефоне будет показано понятное согласие: используется только интернет для проверки открытых цен.</p>
+    <form method="post" action="/automation/helper-session/create"><input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}"><button class="btn btn-primary btn-wide">Создать ссылку для телефона</button></form>
+    {% if new_helper_url %}<div class="notice success compact"><b>Ссылка готова</b><div class="copy-box"><code id="new-helper-url">{{ new_helper_url }}</code><button class="btn btn-small" type="button" data-copy="#new-helper-url">Копировать</button></div></div>{% endif %}
+    {% if helper_sessions %}<div class="session-list">{% for session in helper_sessions %}<div class="session-row"><div><b>{{ {'active':'Активна','completed':'Завершена','revoked':'Отключена','expired':'Истекла'}.get(session.status, session.status) }}</b><small>{{ session.total_completed }} результатов · {{ session.success_count }} успешно · {{ session.error_count }} ошибок</small></div>{% if session.status == 'active' %}<form method="post" action="/automation/helper-session/{{ session.id }}/revoke"><input type="hidden" name="store_id" value="{{ selected_store_id }}"><button class="btn btn-small btn-danger">Отключить</button></form>{% endif %}</div>{% endfor %}</div>{% endif %}
+  </div>
+
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Полный каталог</p><h2>{{ 'XML опубликован' if feed_record else 'XML ещё не создан' }}</h2></div>{% if feed_record %}<span class="badge on">{{ feed_record.product_count }} товаров</span>{% endif %}</div>
+    {% if feed_record %}
+      <p class="muted">Версия {{ feed_record.feed_id }} · {{ feed_record.updated_at }} · {{ (feed_record.size_bytes / 1024)|round(1) }} KB.</p>
+      <div class="status-steps"><span class="done">Цена рассчитана</span><span class="done">Добавлена в XML</span><span class="done">XML опубликован</span><span>{{ 'Kaspi запрашивал XML' if feed_pulls else 'Ожидается запрос Kaspi' }}</span></div>
+      <a class="btn btn-soft btn-wide" href="/xml-history?store_id={{ selected_store_id }}&feed_id={{ feed_record.feed_id }}">Открыть версию</a>
+    {% else %}
+      <div class="empty-archive"><b>XML ещё не создан</b><p>Создайте первую полную версию. Ошибка одного товара не исключит его из каталога.</p><form method="post" action="/xml-history/create"><input type="hidden" name="store_id" value="{{ selected_store_id }}"><button class="btn btn-primary">Создать полный XML</button></form></div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

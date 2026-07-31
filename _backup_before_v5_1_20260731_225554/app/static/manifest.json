@@ -1,0 +1,13 @@
+{
+  "name": "Kaspi AutoPrice",
+  "short_name": "AutoPrice",
+  "description": "Панель автопрайса для Kaspi",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f3fb",
+  "theme_color": "#0f172a",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

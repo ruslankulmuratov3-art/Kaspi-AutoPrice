@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Вход — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-copy">
+    <p class="eyebrow">Kaspi AutoPrice</p>
+    <h1>Управление ценами без лишнего шума.</h1>
+    <p class="lead">Войди в панель или подключи доверенное устройство.</p>
+  </div>
+  <div class="premium-card login-card">
+    <div class="card-head"><div><p class="eyebrow">Аккаунт</p><h2>Вход</h2></div></div>
+    {% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+    {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+    <form class="form" method="post" action="/login">
+      <label>Email или логин<input name="username" autocomplete="username" placeholder="admin@example.com" required></label>
+      <label>Пароль<input name="password" type="password" autocomplete="current-password" placeholder="••••••••" required></label>
+      <button class="btn btn-primary btn-wide">Войти</button>
+    </form>
+    {% if false %}
+    <div class="auth-divider"><span>или</span></div>
+    <a class="btn btn-google btn-wide" href="/auth/google/start"><span class="google-mark">G</span> Войти через Google</a>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -45,6 +45,28 @@ class AutoPilotService:
     def _lock(self, store_id: int) -> asyncio.Lock:
         return self._local_store_locks.setdefault(int(store_id), asyncio.Lock())
 
+    @staticmethod
+    def _friendly_error(exc: Exception) -> str:
+        """Return a short user-facing error while the full traceback stays in logs."""
+        raw = str(exc or '').strip()
+        lowered = raw.casefold()
+        if 'database is locked' in lowered:
+            return (
+                'Локальная база была временно занята другим процессом. '
+                'Данные сохранены; нажмите «Продолжить с сохранённого места».'
+            )
+        if 'detachedinstanceerror' in lowered or 'not bound to a session' in lowered:
+            return 'Внутренняя сессия базы была закрыта раньше времени. Задание можно безопасно продолжить.'
+        if '429' in lowered:
+            return 'Kaspi временно ограничил запросы. Цена оставлена безопасной; повторите позже.'
+        if '405' in lowered:
+            return 'Источник конкурентов отклонил способ запроса. Используйте сохранённый кэш или помощник телефона.'
+        # Never expose a multi-kilobyte SQL statement/XML payload in the UI.
+        for marker in ('[SQL:', '[parameters:', 'Background on this error at:', '\n[SQL:'):
+            if marker in raw:
+                raw = raw.split(marker, 1)[0].strip()
+        return (raw or exc.__class__.__name__)[:500]
+
     def start(self) -> None:
         if self._started or not self.enabled():
             return
@@ -137,24 +159,41 @@ class AutoPilotService:
             job = self.latest_job(db, int(store_id))
             if not job:
                 return None
-            percent = round(job.processed / max(1, job.total) * 100, 1) if job.total else 0
+            total = int(job.total or 0)
+            processed = int(job.processed or 0)
+            remaining = max(0, total - processed)
+            percent = round(processed / max(1, total) * 100, 1) if total else 0
+            now = datetime.utcnow()
+            heartbeat_age = int((now - job.heartbeat_at).total_seconds()) if job.heartbeat_at else None
+            eta_seconds: int | None = None
+            expected_finish_at: str | None = None
+            if job.status in (AutopilotJobStatus.QUEUED, AutopilotJobStatus.RUNNING) and remaining:
+                cached_mode = str(job.mode or '') in ('local_agent_sync', 'incremental') or not settings.KASPI_PUBLIC_OFFERS_ENABLED
+                per_item = 0.20 if cached_mode else max(0.5, float(settings.KASPI_AUTOPILOT_DELAY_SECONDS or 0))
+                eta_seconds = max(1, int(remaining * per_item + 5))
+                expected_finish_at = (now + timedelta(seconds=eta_seconds)).isoformat(timespec='seconds')
             return {
                 'job_id': job.id,
                 'running': job.status == AutopilotJobStatus.RUNNING,
                 'status': job.status.value,
-                'processed_now': job.processed,
-                'total': job.total,
+                'processed_now': processed,
+                'total': total,
+                'remaining': remaining,
                 'percent': percent,
-                'changed': job.changed,
-                'skipped': job.skipped,
-                'unchanged': job.unchanged,
-                'queued': job.queued_changes,
-                'errors': job.errors,
+                'changed': int(job.changed or 0),
+                'skipped': int(job.skipped or 0),
+                'unchanged': int(job.unchanged or 0),
+                'queued': int(job.queued_changes or 0),
+                'errors': int(job.errors or 0),
                 'current_product_id': job.current_product_id,
                 'started_at': job.started_at.isoformat(timespec='seconds') if job.started_at else None,
                 'updated_at': job.updated_at.isoformat(timespec='seconds') if job.updated_at else None,
+                'heartbeat_at': job.heartbeat_at.isoformat(timespec='seconds') if job.heartbeat_at else None,
+                'heartbeat_age_seconds': heartbeat_age,
                 'finished_at': job.finished_at.isoformat(timespec='seconds') if job.finished_at else None,
-                'error': job.error_message if job.status == AutopilotJobStatus.ERROR else '',
+                'eta_seconds': eta_seconds,
+                'expected_finish_at': expected_finish_at,
+                'error': self._friendly_error(RuntimeError(job.error_message)) if job.status == AutopilotJobStatus.ERROR and job.error_message else '',
                 'recovery_notice': bool(job.recovery_notice_pending),
                 'recovery_count': int(job.recovery_count or 0),
             }
@@ -347,7 +386,7 @@ class AutoPilotService:
                     row.status = AutopilotJobStatus.ERROR
                     row.finished_at = datetime.utcnow()
                     row.heartbeat_at = datetime.utcnow()
-                    row.error_message = str(exc)[:1000]
+                    row.error_message = self._friendly_error(exc)
                     db.add(row)
                     db.commit()
             finally:
@@ -462,7 +501,7 @@ class AutoPilotService:
                         'changed': False,
                         'status': 'error',
                         'reason': 'Ошибка обработки товара. Цена оставлена без изменений.',
-                        'error_message': str(exc)[:2000],
+                        'error_message': self._friendly_error(exc),
                         'data_source': '',
                         'cache_state': '',
                     }
@@ -470,7 +509,7 @@ class AutoPilotService:
                     job.errors += 1
                     job.processed += 1
                     job.cursor_product_id = int(product_id)
-                    job.error_message = str(exc)[:500]
+                    job.error_message = self._friendly_error(exc)
                     db.add(job)
                     db.commit()
                 logger.exception('Autopilot product %s failed: %s', product_id, exc)
@@ -508,7 +547,25 @@ class AutoPilotService:
                     item['reason'] = 'В очереди: достигнут лимит изменений.'
             job.changed = len(allowed)
             job.queued_changes = len(queued)
-            record = xml_feed_service.save_feed(store=store, products=full_products, price_by_sku=price_by_sku, warehouse_id=job.warehouse_id, processed=job.processed, changed=len(allowed), skipped=job.unchanged + job.skipped, queued=len(queued), errors=job.errors, q_filter=job.mode, details=decisions, source=job.mode, job_id=job.id)
+            record = xml_feed_service.save_feed(
+                store=store,
+                products=full_products,
+                price_by_sku=price_by_sku,
+                warehouse_id=job.warehouse_id,
+                processed=job.processed,
+                changed=len(allowed),
+                unchanged=job.unchanged,
+                skipped=job.skipped,
+                queued=len(queued),
+                errors=job.errors,
+                q_filter=job.mode,
+                details=decisions,
+                source=job.mode,
+                job_id=job.id,
+                db=db,
+                commit=False,
+                write_file=False,
+            )
             if not record.get('is_active'):
                 raise XmlFeedError(record.get('rejection_reason') or 'Новая XML-версия отклонена.')
 
@@ -531,14 +588,16 @@ class AutoPilotService:
             job.result_json = json.dumps({'feed_id': record['feed_id'], 'budget': budget, 'source_state': competitor_service.state_info(db)}, ensure_ascii=False)
             db.add(job)
             db.add(Alert(title='XML создан', body=f'{store.name}: {record["product_count"]} товаров, {len(allowed)} новых цен, {len(queued)} в очереди.', type=AlertType.SYSTEM))
+            completed_store_id = int(store.id)
             db.commit()
+            xml_feed_service.sync_active_file(completed_store_id)
         except Exception as exc:
             db.rollback()
             job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
             if job:
                 job.status = AutopilotJobStatus.ERROR
                 job.finished_at = datetime.utcnow()
-                job.error_message = str(exc)[:1000]
+                job.error_message = self._friendly_error(exc)
                 db.add(job)
                 db.commit()
             logger.exception('Autopilot job %s failed: %s', job_id, exc)

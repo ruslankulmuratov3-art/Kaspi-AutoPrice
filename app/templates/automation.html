@@ -61,14 +61,18 @@
   <div class="progress-panel" data-job-panel>
     <div class="progress-head"><b><span data-job-processed>{{ autopilot_status.processed_now if autopilot_status else 0 }}</span> / <span data-job-total>{{ autopilot_status.total if autopilot_status else 0 }}</span></b><span data-job-percent>{{ autopilot_status.percent if autopilot_status else 0 }}%</span></div>
     <div class="progress-track"><i data-job-bar style="width: {{ autopilot_status.percent if autopilot_status else 0 }}%"></i></div>
+    <div class="progress-meta">
+      <span><b data-job-remaining>{{ autopilot_status.remaining if autopilot_status else 0 }}</b> товаров осталось</span>
+      <span data-job-eta>{% if autopilot_status and autopilot_status.status in ['queued','running'] and autopilot_status.remaining %}Примерное время рассчитывается…{% elif autopilot_status and autopilot_status.status == 'done' %}Расчёт завершён{% else %}Ожидание запуска{% endif %}</span>
+    </div>
     <div class="job-stats job-stat-links">
       <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=changed{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Изменено</span><b data-job-changed>{{ autopilot_status.changed if autopilot_status else 0 }}</b></a>
       <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=unchanged{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Без изменений</span><b data-job-unchanged>{{ autopilot_status.unchanged if autopilot_status else 0 }}</b></a>
       <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=skipped{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Пропущено</span><b data-job-skipped>{{ autopilot_status.skipped if autopilot_status else 0 }}</b></a>
       <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=error{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>Ошибки</span><b data-job-errors>{{ autopilot_status.errors if autopilot_status else 0 }}</b></a>
-      <a href="/automation/results?store_id={{ selected_store_id }}&status_filter=queued{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>В безопасной очереди</span><b data-job-queued>{{ autopilot_status.queued if autopilot_status else 0 }}</b></a>
+      <a data-job-queued-card {% if not autopilot_status or not autopilot_status.queued %}hidden{% endif %} href="/automation/results?store_id={{ selected_store_id }}&status_filter=queued{% if latest_job %}&job_id={{ latest_job.id }}{% endif %}"><span>В безопасной очереди</span><b data-job-queued>{{ autopilot_status.queued if autopilot_status else 0 }}</b></a>
     </div>
-    {% if autopilot_status and autopilot_status.error %}<div class="notice danger compact"><b>Расчёт остановился из-за ошибки</b><p>{{ autopilot_status.error }}</p></div>{% endif %}
+    {% if autopilot_status and autopilot_status.error %}<div class="notice danger compact job-error-notice"><b>Расчёт остановился из-за ошибки</b><p>{{ autopilot_status.error }}</p><small>Обработанные товары и кэш сохранены. После исправления нажмите «Продолжить с сохранённого места».</small></div>{% endif %}
   </div>
 
   <div class="grid-2 action-grid">

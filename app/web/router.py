@@ -858,7 +858,7 @@ def automation_results_page(
         if status_filter == 'changed':
             query = query.filter(AutopilotJobItem.changed == True, AutopilotJobItem.status == 'changed')
         elif status_filter == 'unchanged':
-            query = query.filter(AutopilotJobItem.status.in_(['unchanged', 'safe_skipped']))
+            query = query.filter(AutopilotJobItem.status == 'unchanged')
         elif status_filter == 'skipped':
             query = query.filter(AutopilotJobItem.status == 'safe_skipped')
         elif status_filter == 'error':
@@ -885,7 +885,7 @@ def xml_history_create(request: Request, store_id: int = Form(...), db: Session 
         record = incremental_pricing_service.rebuild_xml_now(int(store_id), finish_job=False)
         return RedirectResponse(f'/xml-history?store_id={store_id}&feed_id={record["feed_id"]}&message=' + quote('Полный XML создан и проверен.'), status_code=303)
     except Exception as exc:
-        return RedirectResponse(f'/xml-history?store_id={store_id}&error=' + quote(str(exc)), status_code=303)
+        return RedirectResponse(f'/xml-history?store_id={store_id}&error=' + quote(autopilot_service._friendly_error(exc)), status_code=303)
 
 
 @web_router.get('/automation', response_class=HTMLResponse)
@@ -919,11 +919,16 @@ def automation_page(request: Request, store_id: int | None = None, db: Session =
         cutoff = datetime.utcnow() - timedelta(minutes=max(1, int(settings.LOCAL_AGENT_CACHE_TTL_MINUTES or 360)))
         fresh_snapshots = db.query(CompetitorSnapshot).filter(CompetitorSnapshot.store_id == selected_store_id, CompetitorSnapshot.fetched_at >= cutoff).count()
         helper_sessions = db.query(HelperSession).filter(HelperSession.store_id == selected_store_id).order_by(HelperSession.id.desc()).limit(5).all()
-    recovery_notice = bool(latest_job and latest_job.recovery_notice_pending)
-    if recovery_notice:
-        latest_job.recovery_notice_pending = False
-        db.add(latest_job)
-        db.commit()
+    # A GET page must not write to SQLite while the background worker is committing.
+    # Remember that the notice was shown in the browser session instead of updating the job.
+    recovery_key = f'recovery_notice_seen_{latest_job.id}' if latest_job else ''
+    recovery_notice = bool(
+        latest_job
+        and latest_job.recovery_notice_pending
+        and not request.session.get(recovery_key, False)
+    )
+    if recovery_notice and recovery_key:
+        request.session[recovery_key] = True
     new_helper_url = request.session.pop('new_helper_url', '')
     return templates.TemplateResponse('automation.html', {
         'request': request,
@@ -1102,7 +1107,7 @@ def xml_history_activate(request: Request, store_id: int = Form(...), feed_id: s
         xml_feed_service.activate_version(store_id, feed_id)
         return RedirectResponse(f'/xml-history?store_id={store_id}&feed_id={feed_id}&message=' + quote('Версия XML стала активной.'), status_code=303)
     except XmlFeedError as exc:
-        return RedirectResponse(f'/xml-history?store_id={store_id}&error=' + quote(str(exc)), status_code=303)
+        return RedirectResponse(f'/xml-history?store_id={store_id}&error=' + quote(autopilot_service._friendly_error(exc)), status_code=303)
 
 
 @web_router.get('/android', response_class=HTMLResponse)
