@@ -285,9 +285,9 @@ class CompetitorService:
         if not settings.KASPI_PUBLIC_OFFERS_ENABLED:
             cached = self.cached(db, product, allow_stale=bool(settings.KASPI_USE_STALE_COMPETITOR_CACHE_ON_ERROR))
             if cached:
-                cached.error = cached.error or 'Использованы сохранённые данные конкурентов.'
+                cached.error = cached.error or 'Использованы данные локального агента из кэша.'
                 return cached
-            message = 'Свежие данные конкурентов пока не получены.'
+            message = 'Ожидаются данные локального агента. Цена оставлена без изменений.' if settings.LOCAL_AGENT_ENABLED else 'Получение конкурентов выключено. Цена оставлена без изменений.'
             raise CompetitorUnavailable(message)
 
         is_open, until = self.is_open(db)

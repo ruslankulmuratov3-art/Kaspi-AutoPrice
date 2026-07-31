@@ -11,9 +11,7 @@
     <p class="lead">{{ product.kaspi_sku }}{% if product.product_id %} · {{ product.product_id }}{% endif %}{% if product.url %} · <a class="link" href="{{ product.url }}" target="_blank">Kaspi</a>{% endif %}</p>
   </div>
   <div class="hero-actions">
-    {% if can_refresh_competitors %}
-    <form method="post" action="/pricing/refresh/{{ product.id }}"><button class="btn btn-soft">Обновить конкурентов</button></form>
-    {% endif %}
+    <form method="post" action="/pricing/refresh/{{ product.id }}"><button class="btn btn-soft">Конкуренты</button></form>
     <a class="btn btn-primary" href="/automation?store_id={{ product.store_id }}">Автопилот</a>
   </div>
 </section>
@@ -57,11 +55,7 @@
       {% for o in product.competitor_offers %}
       <div class="list-item"><div><b>#{{ o.position }} {{ o.seller_name }}</b><small>доставка {{ o.delivery_days }} дн.</small></div><span class="badge">{{ o.price|money }}</span></div>
       {% endfor %}
-      {% if not product.competitor_offers %}
-      <div class="empty-archive">
-        {% if can_refresh_competitors %}Нажмите «Обновить конкурентов».{% else %}Свежие данные появятся после проверки через автопилот или телефон.{% endif %}
-      </div>
-      {% endif %}
+      {% if not product.competitor_offers %}<div class="empty-archive">Нажмите “Конкуренты”.</div>{% endif %}
     </div>
   </div>
 </section>

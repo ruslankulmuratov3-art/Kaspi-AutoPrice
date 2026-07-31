@@ -29,7 +29,7 @@ from app.services.generated_price_list_service import generated_price_list_servi
 from app.services.xml_feed_service import xml_feed_service, XmlFeedError
 from app.services.autopilot_service import autopilot_service
 from app.services.price_change_limiter import price_change_limiter
-from app.services.competitor_service import CompetitorUnavailable, competitor_service
+from app.services.competitor_service import competitor_service
 from app.services.search_service import product_text_matches
 from app.services.helper_session_service import helper_session_service
 from app.services.incremental_pricing_service import incremental_pricing_service
@@ -519,7 +519,7 @@ def product_detail(request: Request, product_id: int, db: Session = Depends(get_
         db.refresh(product)
     visible_sources = ['kaspi_confirmed', 'price_list_confirmed', 'xml_prepared', 'manual']
     confirmed_history = db.query(PriceHistory).filter(PriceHistory.product_id == product.id, PriceHistory.source.in_(visible_sources)).order_by(PriceHistory.created_at.desc()).limit(20).all()
-    return templates.TemplateResponse('product_detail.html', {'request': request, 'user': user, 'product': product, 'confirmed_history': confirmed_history, 'strategies': PricingStrategy, 'can_refresh_competitors': bool(settings.KASPI_PUBLIC_OFFERS_ENABLED), 'message': request.query_params.get('message', ''), 'error': request.query_params.get('error', '')})
+    return templates.TemplateResponse('product_detail.html', {'request': request, 'user': user, 'product': product, 'confirmed_history': confirmed_history, 'strategies': PricingStrategy, 'message': request.query_params.get('message', ''), 'error': request.query_params.get('error', '')})
 
 
 @web_router.post('/products/{product_id}/settings')
@@ -606,21 +606,14 @@ async def refresh_competitors_page(request: Request, product_id: int, db: Sessio
         return login_redirect()
     product = db.query(Product).filter(Product.id == product_id).first()
     if product:
-        # В production прямые запросы с Render обычно выключены. Не показываем
-        # пользователю техническое сообщение про локального агента и не создаём
-        # ложную ошибку: сохранённые конкуренты уже отображаются на странице.
-        if not settings.KASPI_PUBLIC_OFFERS_ENABLED:
-            return RedirectResponse(f'/products/{product_id}', status_code=303)
         try:
             await pricing_engine.refresh_competitors(db, product)
-            return RedirectResponse(f'/products/{product_id}?message=' + quote('Данные конкурентов обновлены. Цена Kaspi не менялась.'), status_code=303)
-        except CompetitorUnavailable:
-            return RedirectResponse(f'/products/{product_id}', status_code=303)
+            return RedirectResponse(f'/products/{product_id}?message=' + quote('Конкуренты загружены. Цена Kaspi не менялась.'), status_code=303)
         except Exception as exc:
-            error_text = str(exc)[:350]
-            db.add(Alert(title='Не удалось обновить конкурентов', body=error_text, type=AlertType.API_ERROR))
+            error_text = str(exc)[:1000]
+            db.add(Alert(title='Конкуренты не загружены', body=error_text, type=AlertType.API_ERROR))
             db.commit()
-            return RedirectResponse(f'/products/{product_id}?error=' + quote('Не удалось обновить данные конкурентов.'), status_code=303)
+            return RedirectResponse(f'/products/{product_id}?error=' + quote(error_text[:350]), status_code=303)
     return RedirectResponse(f'/products/{product_id}', status_code=303)
 
 
