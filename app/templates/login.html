@@ -16,11 +16,10 @@
       <label>Пароль<input name="password" type="password" autocomplete="current-password" placeholder="••••••••" required></label>
       <button class="btn btn-primary btn-wide">Войти</button>
     </form>
-    {% if google_enabled %}
+    {% if false %}
     <div class="auth-divider"><span>или</span></div>
     <a class="btn btn-google btn-wide" href="/auth/google/start"><span class="google-mark">G</span> Войти через Google</a>
     {% endif %}
-    {% if registration_enabled %}<p class="auth-foot">Нет аккаунта? <a href="/register">Регистрация по коду</a></p>{% endif %}
   </div>
 </section>
 {% endblock %}

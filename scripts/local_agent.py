@@ -42,6 +42,8 @@ class AgentConfig:
     sort_option: str
     method: str
     flush_every: int
+    helper_token: str = ''
+    helper_mode: bool = False
 
 
 @dataclass(slots=True)
@@ -156,10 +158,28 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def parse_helper_url(value: str) -> tuple[str, str]:
+    from urllib.parse import urlparse
+    raw = str(value or '').strip()
+    parsed = urlparse(raw)
+    marker = '/helper/session/'
+    if parsed.scheme not in ('http', 'https') or marker not in parsed.path:
+        raise SystemExit('Ошибка: нужна ссылка вида https://site/helper/session/SECRET')
+    token = parsed.path.split(marker, 1)[1].strip('/').split('/', 1)[0]
+    if not token:
+        raise SystemExit('Ошибка: в ссылке помощника нет токена.')
+    return f'{parsed.scheme}://{parsed.netloc}', token
+
+
 def load_config(args: argparse.Namespace) -> AgentConfig:
     saved = load_saved_credentials()
-    base_url = (args.url or os.getenv('RENDER_BASE_URL', '') or saved.get('render_base_url', '')).strip().rstrip('/')
-    token = (args.token or os.getenv('LOCAL_AGENT_TOKEN', '') or saved.get('token', '')).strip()
+    helper_token = ''
+    helper_mode = bool(getattr(args, 'helper_url', ''))
+    if helper_mode:
+        base_url, helper_token = parse_helper_url(args.helper_url)
+    else:
+        base_url = (args.url or os.getenv('RENDER_BASE_URL', '') or saved.get('render_base_url', '')).strip().rstrip('/')
+    token = (args.token or os.getenv('LOCAL_AGENT_TOKEN', '') or saved.get('token', '')).strip() if not helper_mode else helper_token
     agent_id = (args.agent_id or os.getenv('LOCAL_AGENT_ID', '') or saved.get('agent_id', '')).strip()
     agent_id = agent_id or f'device-{os.getenv("COMPUTERNAME") or os.getenv("HOSTNAME") or "local"}'
     raw_store = args.store_id if args.store_id is not None else os.getenv('LOCAL_AGENT_STORE_ID', '').strip()
@@ -167,7 +187,7 @@ def load_config(args: argparse.Namespace) -> AgentConfig:
     if not base_url.startswith(('http://', 'https://')):
         raise SystemExit('Ошибка: укажи RENDER_BASE_URL, например https://kaspi-autoprice.onrender.com')
     if not token:
-        raise SystemExit('Ошибка: устройство не подключено. Запусти агент с --pair-code DEV-...')
+        raise SystemExit('Ошибка: укажи --helper-url или подключи устройство.')
 
     default_delay = 4.0 if args.fast else 6.0
     configured_delay = args.delay or _float_env('AGENT_DELAY_SECONDS', default_delay)
@@ -195,10 +215,14 @@ def load_config(args: argparse.Namespace) -> AgentConfig:
         sort_option=os.getenv('KASPI_PUBLIC_SORT_OPTION', 'PRICE').strip() or 'PRICE',
         method=os.getenv('KASPI_PUBLIC_OFFERS_METHOD', 'POST').strip().upper() or 'POST',
         flush_every=max(1, min(_int_env('LOCAL_AGENT_FLUSH_EVERY', 25), 100)),
+        helper_token=helper_token,
+        helper_mode=helper_mode,
     )
 
 
 def agent_headers(config: AgentConfig) -> dict[str, str]:
+    if config.helper_mode:
+        return {'Accept': 'application/json'}
     return {
         'X-Agent-Token': config.token,
         'X-Agent-ID': config.agent_id,
@@ -211,7 +235,7 @@ def fetch_tasks(client: httpx.Client, config: AgentConfig) -> list[dict[str, Any
     if config.store_id:
         params['store_id'] = config.store_id
     response = client.get(
-        f'{config.render_base_url}/api/local-agent/tasks',
+        f'{config.render_base_url}/api/helper/{config.helper_token}/tasks' if config.helper_mode else f'{config.render_base_url}/api/local-agent/tasks',
         params=params,
         headers=agent_headers(config),
     )
@@ -294,7 +318,7 @@ def submit_result(
         'retry_after_seconds': retry_after,
     }
     response = client.post(
-        f'{config.render_base_url}/api/local-agent/result',
+        f'{config.render_base_url}/api/helper/{config.helper_token}/result' if config.helper_mode else f'{config.render_base_url}/api/local-agent/result',
         json=body,
         headers=agent_headers(config),
     )
@@ -303,6 +327,8 @@ def submit_result(
 
 
 def enqueue_autopilot(client: httpx.Client, config: AgentConfig, store_id: int) -> None:
+    if config.helper_mode:
+        return
     response = client.post(
         f'{config.render_base_url}/api/local-agent/run-autopilot',
         json={'store_id': store_id},
@@ -359,6 +385,14 @@ def run(config: AgentConfig, *, once: bool = False) -> int:
                 continue
 
             if not tasks:
+                if config.helper_mode:
+                    try:
+                        response = render_client.post(f'{config.render_base_url}/api/helper/{config.helper_token}/complete')
+                        if response.status_code < 400:
+                            print('Готово: результаты рассчитаны, полный XML поставлен в публикацию.')
+                            return 0
+                    except httpx.HTTPError as exc:
+                        print(f'Не удалось завершить helper-сессию: {exc}')
                 if synced_since_run:
                     for store_id in sorted(synced_since_run):
                         if successes_since_flush.get(store_id, 0) <= 0:
@@ -440,6 +474,7 @@ def run(config: AgentConfig, *, once: bool = False) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Local Kaspi competitor agent')
     parser.add_argument('--url', help='Render base URL')
+    parser.add_argument('--helper-url', help='Временная ссылка из кнопки «Ускорить через телефон»')
     parser.add_argument('--token', help='Existing per-device token (normally loaded automatically)')
     parser.add_argument('--agent-id', help='Optional local label')
     parser.add_argument('--pair-code', help='One-time DEV code created by the administrator')
@@ -464,7 +499,7 @@ def main() -> int:
         return 0
     saved = load_saved_credentials()
     base_url = (args.url or os.getenv('RENDER_BASE_URL', '') or saved.get('render_base_url', '')).strip().rstrip('/')
-    if args.pair_code:
+    if args.pair_code and not args.helper_url:
         name = args.device_name or platform.node() or 'Новое устройство'
         platform_name = args.platform or f'{platform.system()} {platform.release()}'
         credentials = pair_device(base_url, args.pair_code, name, platform_name)

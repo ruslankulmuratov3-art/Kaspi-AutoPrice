@@ -38,14 +38,16 @@ class PricingEngine:
         old_price = float(product.current_price or 0)
         base = {'data_source': source, 'cache_state': cache_state}
         if product.status != ProductStatus.ACTIVE or not product.auto_pricing_enabled:
-            return PricingDecision(product.id, old_price, old_price, 'Автопрайс выключен', False, 'safe_skipped', details=base)
+            return PricingDecision(product.id, old_price, old_price, 'Автопрайс выключен', False, 'safe_skipped', details={**base, 'reason_code': 'autopricing_disabled'})
         if not rule or not rule.is_enabled or rule.strategy == PricingStrategy.MANUAL:
-            return PricingDecision(product.id, old_price, old_price, 'Ручной режим', False, 'safe_skipped', details=base)
+            return PricingDecision(product.id, old_price, old_price, 'Ручной режим', False, 'safe_skipped', details={**base, 'reason_code': 'manual_mode'})
         clean = self.clean_offers(product, rule, offers)
         if not clean:
-            return PricingDecision(product.id, old_price, old_price, 'Конкуренты не найдены. Цена оставлена без изменений', False, 'safe_skipped', details=base)
+            return PricingDecision(product.id, old_price, old_price, 'Подходящие конкуренты не найдены', False, 'safe_skipped', details={**base, 'reason_code': 'no_competitors'})
 
-        competitor_price = min(float(o.price) for o in clean)
+        best_offer = min(clean, key=lambda o: float(o.price or 0))
+        competitor_price = float(best_offer.price)
+        base = {**base, 'competitor_seller': best_offer.seller_name, 'competitor_seller_id': best_offer.seller_id}
         candidate = old_price
         reason = 'Цена уже оптимальная'
         if rule.strategy == PricingStrategy.MATCH_MIN:
@@ -72,12 +74,14 @@ class PricingEngine:
         floor = max(floors)
         if candidate < floor:
             candidate = floor
-            reason = 'Ограничено минимальной ценой и маржой'
+            reason = 'Достигнута минимальная безопасная цена или защита маржи'
+            base = {**base, 'reason_code': 'minimum_or_margin'}
 
         ceiling = float(product.max_price or 0)
         if ceiling > 0 and candidate > ceiling:
             candidate = ceiling
-            reason = 'Ограничено максимальной ценой'
+            reason = 'Достигнута максимальная цена'
+            base = {**base, 'reason_code': 'maximum'}
 
         candidate = float(round(candidate))
         if candidate <= 0:
@@ -87,13 +91,13 @@ class PricingEngine:
             change_percent = abs(candidate - old_price) / old_price * 100
             max_change = min(max(0.0, float(rule.max_change_percent_per_run or 0)), max(0.0, float(settings.MAX_PRICE_CHANGE_PERCENT or 30)))
             if max_change > 0 and change_percent > max_change:
-                return PricingDecision(product.id, old_price, old_price, f'Изменение {change_percent:.1f}% выше лимита {max_change:.1f}%', False, 'safe_skipped', competitor_price, source, cache_state, {**base, 'change_percent': change_percent})
+                return PricingDecision(product.id, old_price, old_price, f'Изменение {change_percent:.1f}% выше лимита {max_change:.1f}%', False, 'safe_skipped', competitor_price, source, cache_state, {**base, 'change_percent': change_percent, 'reason_code': 'max_change_guard'})
 
         if candidate == old_price:
-            return PricingDecision(product.id, old_price, old_price, 'Цена уже оптимальная', False, 'unchanged', competitor_price, source, cache_state, base)
+            return PricingDecision(product.id, old_price, old_price, 'Цена уже оптимальная', False, 'unchanged', competitor_price, source, cache_state, {**base, 'reason_code': 'already_optimal'})
         if cache_state in ('stale', 'fresh') and source:
             reason += ' · использован кэш'
-        return PricingDecision(product.id, old_price, candidate, reason, True, 'changed', competitor_price, source, cache_state, base)
+        return PricingDecision(product.id, old_price, candidate, reason, True, 'changed', competitor_price, source, cache_state, {**base, 'reason_code': 'price_changed'})
 
     async def refresh_competitors(self, db: Session, product: Product, *, force: bool = False) -> list[KaspiOffer]:
         result = await competitor_service.get(db, product, force=force)

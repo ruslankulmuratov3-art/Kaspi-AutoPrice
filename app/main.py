@@ -37,26 +37,11 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix='/api')
 
     @app.middleware('http')
-    async def viewer_access_guard(request: Request, call_next):
-        path = request.url.path
-        public_prefixes = (
-            '/static', '/login', '/register', '/auth/google', '/logout',
-            '/api/auth', '/api/local-agent', '/kaspi-feed', '/health',
-        )
-        if path == '/' or not path.startswith(public_prefixes):
-            from app.models.user import UserRole
-            from app.web.deps import current_user_optional
-            db = SessionLocal()
-            try:
-                user = current_user_optional(request, db)
-                if user and user.role == UserRole.VIEWER:
-                    if path == '/' or not path.startswith('/agent-setup'):
-                        if path.startswith('/api'):
-                            return JSONResponse(status_code=403, content={'detail': 'Viewer account has no operator access'})
-                        return RedirectResponse('/agent-setup', status_code=303)
-            finally:
-                db.close()
+    async def access_guard(request: Request, call_next):
+        # Helper links are deliberately public but scoped by an expiring random token.
+        # Operator pages continue to enforce their own authenticated dependencies.
         return await call_next(request)
+
 
     @app.on_event('startup')
     async def startup_event() -> None:

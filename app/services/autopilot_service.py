@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -68,11 +70,19 @@ class AutoPilotService:
         db = SessionLocal()
         try:
             cutoff = datetime.utcnow() - timedelta(minutes=max(1, settings.KASPI_AUTOPILOT_HEARTBEAT_TIMEOUT_MINUTES))
+            current_worker = f'{socket.gethostname()}:{os.getpid()}'
             rows = db.query(AutopilotJob).filter(AutopilotJob.status == AutopilotJobStatus.RUNNING).all()
             for row in rows:
-                if not row.heartbeat_at or row.heartbeat_at < cutoff:
+                # A freshly started process cannot own a job claimed by the previous PID.
+                # Requeue it immediately instead of leaving the UI stuck until timeout.
+                orphaned = bool(row.worker_id and row.worker_id != current_worker)
+                stale = not row.heartbeat_at or row.heartbeat_at < cutoff
+                if orphaned or stale:
                     row.status = AutopilotJobStatus.QUEUED
-                    row.error_message = 'Задание восстановлено после перезапуска.'
+                    row.recovery_count = int(row.recovery_count or 0) + 1
+                    row.recovery_notice_pending = True
+                    row.error_message = ''
+                    row.worker_id = ''
                     db.add(row)
             db.commit()
         finally:
@@ -136,7 +146,7 @@ class AutoPilotService:
                 'total': job.total,
                 'percent': percent,
                 'changed': job.changed,
-                'skipped': job.skipped + job.unchanged,
+                'skipped': job.skipped,
                 'unchanged': job.unchanged,
                 'queued': job.queued_changes,
                 'errors': job.errors,
@@ -144,7 +154,9 @@ class AutoPilotService:
                 'started_at': job.started_at.isoformat(timespec='seconds') if job.started_at else None,
                 'updated_at': job.updated_at.isoformat(timespec='seconds') if job.updated_at else None,
                 'finished_at': job.finished_at.isoformat(timespec='seconds') if job.finished_at else None,
-                'error': job.error_message,
+                'error': job.error_message if job.status == AutopilotJobStatus.ERROR else '',
+                'recovery_notice': bool(job.recovery_notice_pending),
+                'recovery_count': int(job.recovery_count or 0),
             }
         finally:
             db.close()
@@ -203,6 +215,7 @@ class AutoPilotService:
             if running:
                 return None
             job.status = AutopilotJobStatus.RUNNING
+            job.worker_id = f'{socket.gethostname()}:{os.getpid()}'
             job.started_at = job.started_at or datetime.utcnow()
             job.heartbeat_at = datetime.utcnow()
             db.add(job)
@@ -264,6 +277,15 @@ class AutoPilotService:
         row.data_source = str(item.get('data_source') or '')[:80]
         row.cache_state = str(item.get('cache_state') or '')[:40]
         row.error_message = str(item.get('error_message') or '')[:2000]
+        row.competitor_seller = str(item.get('competitor_seller') or '')[:255]
+        row.competitor_seller_id = str(item.get('competitor_seller_id') or '')[:255]
+        row.min_price = float(item.get('min_price') or 0)
+        row.max_price = float(item.get('max_price') or 0)
+        row.cost_price = float(item.get('cost_price') or 0)
+        row.margin_percent = float(item.get('margin_percent') or 0)
+        row.step = float(item.get('step') or 0)
+        row.http_status = item.get('http_status')
+        row.source_device = str(item.get('source_device') or '')[:255]
         db.add(row)
         return row
 
@@ -289,6 +311,16 @@ class AutoPilotService:
                 'data_source': row.data_source,
                 'cache_state': row.cache_state,
                 'error_message': row.error_message,
+                'competitor_seller': row.competitor_seller,
+                'competitor_seller_id': row.competitor_seller_id,
+                'min_price': row.min_price,
+                'max_price': row.max_price,
+                'cost_price': row.cost_price,
+                'margin_percent': row.margin_percent,
+                'step': row.step,
+                'http_status': row.http_status,
+                'source_device': row.source_device,
+                'xml_feed_id': row.xml_feed_id,
             }
             for row in rows
         ]
@@ -296,14 +328,31 @@ class AutoPilotService:
     async def _execute_job(self, job_id: int) -> None:
         db = SessionLocal()
         try:
-            job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
-            if not job:
+            store_id = db.query(AutopilotJob.store_id).filter(AutopilotJob.id == int(job_id)).scalar()
+            if not store_id:
                 return
-            store_id = int(job.store_id)
+            store_id = int(store_id)
         finally:
             db.close()
-        async with self._lock(store_id):
-            await self._run_job(job_id)
+        try:
+            async with self._lock(store_id):
+                await self._run_job(job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            db = SessionLocal()
+            try:
+                row = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
+                if row:
+                    row.status = AutopilotJobStatus.ERROR
+                    row.finished_at = datetime.utcnow()
+                    row.heartbeat_at = datetime.utcnow()
+                    row.error_message = str(exc)[:1000]
+                    db.add(row)
+                    db.commit()
+            finally:
+                db.close()
+            logger.exception('Autopilot job %s crashed: %s', job_id, exc)
 
     async def _run_job(self, job_id: int) -> None:
         db = SessionLocal()
@@ -312,6 +361,7 @@ class AutoPilotService:
             store = db.query(Store).filter(Store.id == job.store_id).first() if job else None
             if not job or not store:
                 return
+            job_mode = str(job.mode or 'all')
             product_ids = self._product_ids(db, job)
             job.total = max(int(job.total or 0), int(job.processed or 0) + len(product_ids))
             job.heartbeat_at = datetime.utcnow()
@@ -321,6 +371,7 @@ class AutoPilotService:
             db.close()
 
         for product_id in product_ids:
+            should_delay = False
             db = SessionLocal()
             try:
                 job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first()
@@ -372,10 +423,19 @@ class AutoPilotService:
                     'status': decision.status,
                     'reason': decision.reason,
                     'competitor_price': decision.competitor_price,
+                    'competitor_seller': str((decision.details or {}).get('competitor_seller') or ''),
+                    'competitor_seller_id': str((decision.details or {}).get('competitor_seller_id') or ''),
                     'data_source': decision.data_source,
                     'cache_state': decision.cache_state,
+                    'min_price': float(product.min_price or 0),
+                    'max_price': float(product.max_price or 0),
+                    'cost_price': float(product.cost_price or 0),
+                    'margin_percent': float(product.pricing_rule.min_margin_percent or 0) if product.pricing_rule else 0,
+                    'step': float(product.pricing_rule.beat_step or 0) if product.pricing_rule else 0,
+                    'http_status': (decision.details or {}).get('http_status'),
                 }
                 self._save_job_item(db, job, item)
+                should_delay = bool(decision.data_source == competitor_service.SOURCE_KEY and decision.cache_state == 'live')
                 product.last_pricing_calculated_at = datetime.utcnow()
                 db.add(product)
                 job.processed += 1
@@ -416,7 +476,7 @@ class AutoPilotService:
                 logger.exception('Autopilot product %s failed: %s', product_id, exc)
             finally:
                 db.close()
-            delay = 0.0 if job.mode == 'local_agent_sync' else max(0.0, float(settings.KASPI_AUTOPILOT_DELAY_SECONDS or 0))
+            delay = max(0.0, float(settings.KASPI_AUTOPILOT_DELAY_SECONDS or 0)) if should_delay and job_mode != 'local_agent_sync' else 0.0
             if delay:
                 await asyncio.sleep(delay)
 
@@ -448,7 +508,7 @@ class AutoPilotService:
                     item['reason'] = 'В очереди: достигнут лимит изменений.'
             job.changed = len(allowed)
             job.queued_changes = len(queued)
-            record = xml_feed_service.save_feed(store=store, products=full_products, price_by_sku=price_by_sku, warehouse_id=job.warehouse_id, processed=job.processed, changed=len(allowed), skipped=job.unchanged + job.skipped, queued=len(queued), errors=job.errors, q_filter=job.mode, details=decisions)
+            record = xml_feed_service.save_feed(store=store, products=full_products, price_by_sku=price_by_sku, warehouse_id=job.warehouse_id, processed=job.processed, changed=len(allowed), skipped=job.unchanged + job.skipped, queued=len(queued), errors=job.errors, q_filter=job.mode, details=decisions, source=job.mode, job_id=job.id)
             if not record.get('is_active'):
                 raise XmlFeedError(record.get('rejection_reason') or 'Новая XML-версия отклонена.')
 
@@ -463,6 +523,7 @@ class AutoPilotService:
                     db.add(product)
                     db.add(PriceHistory(product_id=product.id, old_price=old_price, new_price=new_price, reason=str(item.get('reason') or ''), source='xml_prepared'))
             price_change_limiter.record_applied(db, store.id, str(record['feed_id']), allowed)
+            db.query(AutopilotJobItem).filter(AutopilotJobItem.job_id == int(job.id)).update({'xml_feed_id': str(record['feed_id'])}, synchronize_session=False)
             job.status = AutopilotJobStatus.DONE
             job.finished_at = datetime.utcnow()
             job.heartbeat_at = datetime.utcnow()

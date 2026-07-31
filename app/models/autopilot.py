@@ -45,6 +45,9 @@ class AutopilotJob(Base, TimestampMixin):
     finished_at = Column(DateTime, nullable=True)
     error_message = Column(Text, default='')
     result_json = Column(Text, default='{}')
+    worker_id = Column(String(120), default='')
+    recovery_count = Column(Integer, default=0, nullable=False)
+    recovery_notice_pending = Column(Boolean, default=False, nullable=False)
 
     store = relationship('Store')
 
@@ -75,6 +78,17 @@ class AutopilotJobItem(Base, TimestampMixin):
     data_source = Column(String(80), default='')
     cache_state = Column(String(40), default='')
     error_message = Column(Text, default='')
+    competitor_seller = Column(String(255), default='')
+    competitor_seller_id = Column(String(255), default='')
+    min_price = Column(Float, default=0.0)
+    max_price = Column(Float, default=0.0)
+    cost_price = Column(Float, default=0.0)
+    margin_percent = Column(Float, default=0.0)
+    step = Column(Float, default=0.0)
+    http_status = Column(Integer, nullable=True)
+    retry_at = Column(DateTime, nullable=True)
+    source_device = Column(String(255), default='')
+    xml_feed_id = Column(String(120), default='')
 
     job = relationship('AutopilotJob')
     store = relationship('Store')

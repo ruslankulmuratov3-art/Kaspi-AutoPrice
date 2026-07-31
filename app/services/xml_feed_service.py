@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 from sqlalchemy.orm import Session
@@ -73,6 +74,8 @@ class XmlFeedService:
         if not merchant_id:
             raise XmlFeedError('У магазина не указан merchant_id.')
         warehouse_id = (warehouse_id or settings.KASPI_AUTOPILOT_WAREHOUSE_ID or settings.KASPI_STORE_ID or 'PP1').strip()
+        if not warehouse_id:
+            raise XmlFeedError('Не указан склад storeId.')
 
         rows = [
             '<?xml version="1.0" encoding="utf-8"?>',
@@ -82,15 +85,23 @@ class XmlFeedService:
             '  <offers>',
         ]
         count = 0
+        seen_skus: set[str] = set()
+        invalid: list[str] = []
         for product in products:
             sku = str(product.kaspi_sku or '').strip()
             if not sku:
+                invalid.append(f'product:{product.id}:empty-sku')
                 continue
+            if sku in seen_skus:
+                raise XmlFeedError(f'Дублирующийся SKU в XML: {sku}')
+            seen_skus.add(sku)
             price = int(price_by_sku.get(sku, round(float(product.current_price or 0))))
             if price <= 0:
-                continue
+                raise XmlFeedError(f'Нулевая или отрицательная цена запрещена: {sku}')
             model = str(product.model or product.name or sku).strip()
             brand = str(product.brand or settings.KASPI_DEFAULT_BRAND or 'NoBrand').strip()
+            if not model or not brand:
+                raise XmlFeedError(f'Не заполнены model/brand: {sku}')
             stock = max(0, int(product.stock or 0))
             available = 'yes' if product.status == ProductStatus.ACTIVE and stock != 0 else 'no'
             rows.extend([
@@ -107,7 +118,12 @@ class XmlFeedService:
         rows.extend(['  </offers>', '</kaspi_catalog>'])
         if count == 0:
             raise XmlFeedError('XML не создан: нет валидных товаров.')
-        return '\n'.join(rows) + '\n', count
+        xml_text = '\n'.join(rows) + '\n'
+        try:
+            ElementTree.fromstring(xml_text)
+        except ElementTree.ParseError as exc:
+            raise XmlFeedError(f'XML не прошёл проверку синтаксиса: {exc}') from exc
+        return xml_text, count
 
     def _validate(self, *, count: int, expected_count: int, previous_count: int) -> tuple[bool, str]:
         if count <= 0:
@@ -136,7 +152,24 @@ class XmlFeedService:
                 os.unlink(temp_name)
         return path
 
-    def save_feed(self, *, store: Store, products: Iterable[Product], price_by_sku: dict[str, int], warehouse_id: str = '', processed: int = 0, changed: int = 0, skipped: int = 0, queued: int = 0, errors: int = 0, limit_count: int = 0, q_filter: str = '', details: list[dict] | None = None) -> dict[str, Any]:
+    def save_feed(
+        self,
+        *,
+        store: Store,
+        products: Iterable[Product],
+        price_by_sku: dict[str, int],
+        warehouse_id: str = '',
+        processed: int = 0,
+        changed: int = 0,
+        skipped: int = 0,
+        queued: int = 0,
+        errors: int = 0,
+        limit_count: int = 0,
+        q_filter: str = '',
+        details: list[dict] | None = None,
+        source: str = 'manual',
+        job_id: int | None = None,
+    ) -> dict[str, Any]:
         products_list = list(products)
         xml_text, product_count = self.build_xml(store=store, products=products_list, price_by_sku=price_by_sku, warehouse_id=warehouse_id)
         feed_id = self._feed_id()
@@ -151,7 +184,7 @@ class XmlFeedService:
                 status=XmlFeedStatus.CANDIDATE.value if valid else XmlFeedStatus.REJECTED.value,
                 filename=f'kaspi_store_{int(store.id)}.xml',
                 merchant_id=str(store.merchant_id or ''),
-                warehouse_id=warehouse_id or 'PP1',
+                warehouse_id=warehouse_id or settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1',
                 xml_text=xml_text,
                 details_json=json.dumps(details or [], ensure_ascii=False),
                 product_count=product_count,
@@ -164,11 +197,15 @@ class XmlFeedService:
                 size_bytes=len(xml_text.encode('utf-8')),
                 rejection_reason=rejection,
                 is_active=False,
+                source=str(source or 'manual')[:80],
+                job_id=int(job_id) if job_id else None,
             )
             db.add(version)
             db.flush()
             if valid:
-                db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store.id), XmlFeedVersion.is_active == True).update({'is_active': False, 'status': XmlFeedStatus.ARCHIVED.value}, synchronize_session=False)
+                db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store.id), XmlFeedVersion.is_active == True).update(
+                    {'is_active': False, 'status': XmlFeedStatus.ARCHIVED.value}, synchronize_session=False
+                )
                 version.is_active = True
                 version.status = XmlFeedStatus.ACTIVE.value
                 self._write_active_file(int(store.id), xml_text)
@@ -176,6 +213,33 @@ class XmlFeedService:
             return self._record(version, processed=processed, limit_count=limit_count, q_filter=q_filter)
         finally:
             db.close()
+
+    def rebuild_current(self, store_id: int, *, source: str = 'manual', job_id: int | None = None, details: list[dict] | None = None) -> dict[str, Any]:
+        db = SessionLocal()
+        try:
+            store = db.query(Store).filter(Store.id == int(store_id)).first()
+            if not store:
+                raise XmlFeedError('Магазин не найден.')
+            products = self.expected_products(db, int(store_id))
+            if not products:
+                raise XmlFeedError('Нет активных товаров для полного XML.')
+            price_by_sku = {str(p.kaspi_sku): int(round(float(p.current_price or 0))) for p in products}
+            store_value = store
+            product_values = list(products)
+        finally:
+            db.close()
+        return self.save_feed(
+            store=store_value,
+            products=product_values,
+            price_by_sku=price_by_sku,
+            warehouse_id=settings.KASPI_AUTOPILOT_WAREHOUSE_ID or 'PP1',
+            changed=sum(1 for x in (details or []) if x.get('changed')),
+            skipped=sum(1 for x in (details or []) if not x.get('changed')),
+            errors=sum(1 for x in (details or []) if x.get('status') == 'error'),
+            details=details or [],
+            source=source,
+            job_id=job_id,
+        )
 
     def _record(self, version: XmlFeedVersion, **extra: Any) -> dict[str, Any]:
         return {
@@ -196,6 +260,8 @@ class XmlFeedService:
             'status': version.status,
             'is_active': version.is_active,
             'rejection_reason': version.rejection_reason,
+            'source': getattr(version, 'source', '') or 'manual',
+            'job_id': getattr(version, 'job_id', None),
             'limit_count': int(extra.get('limit_count') or 0),
             'q_filter': str(extra.get('q_filter') or ''),
             'type': 'XML',
@@ -233,6 +299,28 @@ class XmlFeedService:
         finally:
             db.close()
 
+    def compare_versions(self, store_id: int, feed_id: str) -> dict[str, list[dict[str, Any]]]:
+        db = SessionLocal()
+        try:
+            current = db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store_id), XmlFeedVersion.feed_id == str(feed_id)).first()
+            if not current:
+                return {'changed': [], 'added': [], 'removed': []}
+            previous = db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store_id), XmlFeedVersion.id < current.id).order_by(XmlFeedVersion.id.desc()).first()
+            current_rows = {str(x.get('sku')): x for x in self._details(current.details_json) if x.get('sku')}
+            previous_rows = {str(x.get('sku')): x for x in self._details(previous.details_json if previous else '[]') if x.get('sku')}
+            changed = []
+            for sku in sorted(set(current_rows) & set(previous_rows)):
+                a, b = previous_rows[sku], current_rows[sku]
+                if a.get('new_price') != b.get('new_price'):
+                    changed.append({'sku': sku, 'name': b.get('name'), 'old': a.get('new_price'), 'new': b.get('new_price')})
+            return {
+                'changed': changed,
+                'added': [current_rows[x] for x in sorted(set(current_rows) - set(previous_rows))],
+                'removed': [previous_rows[x] for x in sorted(set(previous_rows) - set(current_rows))],
+            }
+        finally:
+            db.close()
+
     def activate_version(self, store_id: int, feed_id: str) -> dict[str, Any]:
         db = SessionLocal()
         try:
@@ -242,7 +330,9 @@ class XmlFeedService:
             valid, reason = self._validate(count=row.product_count, expected_count=row.expected_count, previous_count=0)
             if not valid:
                 raise XmlFeedError(reason)
-            db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store_id), XmlFeedVersion.is_active == True).update({'is_active': False, 'status': XmlFeedStatus.ARCHIVED.value}, synchronize_session=False)
+            db.query(XmlFeedVersion).filter(XmlFeedVersion.store_id == int(store_id), XmlFeedVersion.is_active == True).update(
+                {'is_active': False, 'status': XmlFeedStatus.ARCHIVED.value}, synchronize_session=False
+            )
             row.is_active = True
             row.status = XmlFeedStatus.ACTIVE.value
             row.rejection_reason = ''
@@ -285,7 +375,16 @@ class XmlFeedService:
             )
             db.add(row)
             db.commit()
-            return {'pull_id': row.id, 'store_id': row.store_id, 'feed_id': row.feed_id, 'accessed_at': row.created_at.isoformat(timespec='seconds'), 'ip': row.ip_address, 'user_agent': row.user_agent, 'likely_kaspi': row.likely_kaspi, 'response_status': row.response_status}
+            return {
+                'pull_id': row.id,
+                'store_id': row.store_id,
+                'feed_id': row.feed_id,
+                'accessed_at': row.created_at.isoformat(timespec='seconds'),
+                'ip': row.ip_address,
+                'user_agent': row.user_agent,
+                'likely_kaspi': row.likely_kaspi,
+                'response_status': row.response_status,
+            }
         finally:
             db.close()
 
@@ -295,7 +394,20 @@ class XmlFeedService:
         db = SessionLocal()
         try:
             rows = db.query(XmlFeedPull).filter(XmlFeedPull.store_id == int(store_id)).order_by(XmlFeedPull.id.desc()).limit(max(1, min(limit, 500))).all()
-            return [{'pull_id': r.id, 'store_id': r.store_id, 'feed_id': r.feed_id, 'accessed_at': r.created_at.isoformat(timespec='seconds'), 'ip': r.ip_address, 'user_agent': r.user_agent, 'path': r.path, 'likely_kaspi': r.likely_kaspi, 'response_status': r.response_status} for r in rows]
+            return [
+                {
+                    'pull_id': r.id,
+                    'store_id': r.store_id,
+                    'feed_id': r.feed_id,
+                    'accessed_at': r.created_at.isoformat(timespec='seconds'),
+                    'ip': r.ip_address,
+                    'user_agent': r.user_agent,
+                    'path': r.path,
+                    'likely_kaspi': r.likely_kaspi,
+                    'response_status': r.response_status,
+                }
+                for r in rows
+            ]
         finally:
             db.close()
 

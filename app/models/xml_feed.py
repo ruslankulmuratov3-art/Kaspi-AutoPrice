@@ -37,6 +37,8 @@ class XmlFeedVersion(Base, TimestampMixin):
     error_count = Column(Integer, default=0)
     size_bytes = Column(Integer, default=0)
     rejection_reason = Column(Text, default='')
+    source = Column(String(80), default='manual')
+    job_id = Column(Integer, nullable=True, index=True)
     is_active = Column(Boolean, default=False, nullable=False, index=True)
 
     store = relationship('Store')

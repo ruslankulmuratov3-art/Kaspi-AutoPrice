@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Результаты расчёта — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero-card reveal">
+  <div><p class="eyebrow">Диагностика цен</p><h1>Почему цена изменилась</h1><p class="lead">Подробный результат каждого товара без скрытых технических ответов.</p></div>
+  <div class="hero-actions"><a class="btn btn-soft" href="/automation?store_id={{ store_id }}">Назад к автопилоту</a></div>
+</section>
+<section class="premium-card reveal delay-1">
+  <div class="result-tabs">
+    <a class="{{ 'active' if status_filter == 'all' }}" href="?store_id={{ store_id }}&status_filter=all{% if job %}&job_id={{ job.id }}{% endif %}">Все</a>
+    <a class="{{ 'active' if status_filter == 'changed' }}" href="?store_id={{ store_id }}&status_filter=changed{% if job %}&job_id={{ job.id }}{% endif %}">Изменено</a>
+    <a class="{{ 'active' if status_filter == 'unchanged' }}" href="?store_id={{ store_id }}&status_filter=unchanged{% if job %}&job_id={{ job.id }}{% endif %}">Без изменений</a>
+    <a class="{{ 'active' if status_filter == 'error' }}" href="?store_id={{ store_id }}&status_filter=error{% if job %}&job_id={{ job.id }}{% endif %}">Ошибки</a>
+    <a class="{{ 'active' if status_filter == 'queued' }}" href="?store_id={{ store_id }}&status_filter=queued{% if job %}&job_id={{ job.id }}{% endif %}">Очередь</a>
+  </div>
+  {% if job %}<p class="muted">Задание №{{ job.id }} · {{ job.status.value }} · обработано {{ job.processed }} из {{ job.total }}</p>{% endif %}
+</section>
+<section class="premium-card reveal delay-2">
+  {% if rows %}
+  <div class="table-wrap diagnostic-table"><table>
+    <thead><tr><th>Товар</th><th>Цена</th><th>Конкурент</th><th>Границы</th><th>Источник</th><th>Результат</th></tr></thead>
+    <tbody>{% for row in rows %}<tr class="{{ 'changed-row' if row.changed else ('error-row' if row.status == 'error' else '') }}">
+      <td><b>{{ row.product_name }}</b><small><code>{{ row.sku }}</code> · ID {{ row.product_id }}</small></td>
+      <td><span class="price-pair"><s>{{ row.old_price|round|int }} ₸</s><b>{{ row.new_price|round|int }} ₸</b></span>{% if row.requested_price %}<small>Запрошено: {{ row.requested_price|round|int }} ₸</small>{% endif %}</td>
+      <td>{% if row.competitor_price %}<b>{{ row.competitor_price|round|int }} ₸</b><small>{{ row.competitor_seller or 'Продавец не указан' }}</small>{% else %}<span class="muted">Нет подходящего предложения</span>{% endif %}</td>
+      <td><small>min {{ row.min_price|round|int }} · max {{ row.max_price|round|int }}</small><small>себестоимость {{ row.cost_price|round|int }} · маржа {{ row.margin_percent|round(1) }}%</small></td>
+      <td><b>{{ row.data_source or '—' }}</b><small>{{ row.cache_state or '—' }}{% if row.source_device %} · {{ row.source_device }}{% endif %}</small></td>
+      <td><span class="badge {{ 'on' if row.changed else ('hot' if row.status == 'error' else '') }}">{{ {'changed':'Изменено','unchanged':'Без изменений','safe_skipped':'Без изменений','queued':'Очередь','error':'Ошибка'}.get(row.status,row.status) }}</span><p>{{ row.reason }}</p>{% if row.error_message %}<details><summary>Технические детали</summary><code>{{ row.error_message[:500] }}</code></details>{% endif %}{% if row.xml_feed_id %}<small>XML: {{ row.xml_feed_id }}</small>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="empty-archive"><b>Здесь пока нет результатов</b><p>После расчёта товары появятся с точной причиной решения.</p></div>{% endif %}
+</section>
+{% endblock %}

@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    APP_NAME: str = 'Kaspi Price Manager Pro'
-    APP_VERSION: str = '3.0.0'
+    APP_NAME: str = 'Kaspi AutoPrice'
+    APP_VERSION: str = '5.0.0'
     ENVIRONMENT: str = 'local'
     DEBUG: bool = True
     ENABLE_DOCS: bool = True
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # Registration and trusted-device access. New accounts require an admin invite code.
     REGISTRATION_ENABLED: bool = True
+    LEGACY_ACCESS_UI_ENABLED: bool = False
     REGISTRATION_DEFAULT_ROLE: str = 'viewer'
     ACCOUNT_INVITE_EXPIRE_HOURS: int = 72
     DEVICE_INVITE_EXPIRE_HOURS: int = 24
@@ -102,7 +103,7 @@ class Settings(BaseSettings):
     KASPI_DEFAULT_STORE_AUTO_CREATE: bool = True
 
     # Публичный адрес Render/VPS. На production используется вместо 127.0.0.1.
-    PUBLIC_BASE_URL: str = ''
+    PUBLIC_BASE_URL: str = 'https://kaspi-autoprice.onrender.com'
 
     # Защита XML: новая версия публикуется только как полный безопасный каталог.
     KASPI_XML_MIN_PRODUCT_RATIO: float = 0.95
@@ -126,6 +127,12 @@ class Settings(BaseSettings):
     LOCAL_AGENT_LEASE_MINUTES: int = 15
     LOCAL_AGENT_FLUSH_EVERY: int = 25
     LOCAL_AGENT_MAX_TRUSTED_DEVICES: int = 4
+
+    # One-link, explicit-consent browser/companion helper. No account/device code is exposed.
+    HELPER_SESSION_EXPIRE_MINUTES: int = 180
+    HELPER_SESSION_BATCH_SIZE: int = 25
+    HELPER_XML_DEBOUNCE_SECONDS: int = 20
+    HELPER_BROWSER_ENABLED: bool = True
 
     SMTP_HOST: str = ''
     SMTP_PORT: int = 587

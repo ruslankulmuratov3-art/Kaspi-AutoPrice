@@ -1,0 +1,78 @@
+KASPI AUTOPRICE V5 — ОТЧЁТ ОБ ИСПРАВЛЕНИЯХ
+
+Исходный проект: kaspi_saas_real_current.zip
+Цель: стабильный Render/локальный автопилот, полный XML, понятная статистика и телефон по одной временной ссылке.
+
+1. НАЙДЕННЫЕ ПРИЧИНЫ
+
+- DetachedInstanceError возникал из-за обращения к AutopilotJob после закрытия SQLAlchemy Session.
+- После restart свежий running-job мог не считаться stale и оставался без владельца до timeout.
+- Ошибка worker могла оставлять неправильный статус.
+- Готовый кэш конкурентов обрабатывался с задержкой, предназначенной для сетевого запроса.
+- Local-agent flush мог запускать повторный тяжёлый проход вместо расчёта одного товара.
+- Production XML URL смешивался с localhost.
+- XML History не объясняла пустое состояние.
+- Статистика не давала открыть причины changed/unchanged/error.
+- Старые Devices/Admin/USR/DEV-разделы перегружали пользовательский интерфейс.
+
+2. ЧТО ИСПРАВЛЕНО
+
+- SQLAlchemy Session настроена с expire_on_commit=False, но основное исправление — передача job_id и повторное чтение данных в коротких Session.
+- ORM-объекты не передаются между asyncio-задачами.
+- Worker crash переводит job в error.
+- При restart job старого process/PID сразу возвращается в queued, сохраняя cursor и статистику.
+- Сообщение о восстановлении хранится как одноразовое уведомление.
+- Сброс разрешён только для error/paused/stale job и не удаляет товары, кэш, цены или XML.
+- Добавлена инкрементальная обработка: один snapshot → один расчёт товара → сохранение результата.
+- Кэш PostgreSQL обрабатывается без искусственной сетевой задержки.
+- Полный XML пересобирается с debounce, валидируется и активируется атомарно.
+- Пустой, частичный, дублированный XML и цена 0 отклоняются.
+- Production URL всегда отделён от local URL.
+- Добавлены подробные страницы changed/unchanged/skipped/error/queued.
+- Добавлена XML History: empty state, версии, сравнение, download, pulls.
+- Добавлена страница Настройки/Диагностика с подсчётами и дубликатами.
+- Убраны из меню и маршрутов пользовательского интерфейса Devices, Admin, register и Google login.
+- Legacy device/admin API по умолчанию не подключаются.
+- Добавлена временная helper-ссылка для телефона без DEV/USR-кодов.
+- На helper-странице обязательно явное согласие.
+- Browser helper сначала делает CORS-тест; при блокировке ничего не обходит и предлагает companion mode.
+- Companion script принимает --helper-url и не требует device code.
+- Добавлены Manrope и Unbounded, адаптивные карточки, progress, empty states и мобильная вёрстка.
+
+3. БЕЗОПАСНОСТЬ ДАННЫХ
+
+- Миграция только additive; таблицы не удаляются.
+- Старые таблицы access/device сохранены для обратимости и чтобы не разрушить существующую PostgreSQL.
+- Их UI/API отключены настройкой LEGACY_ACCESS_UI_ENABLED=false.
+- Временный helper token хранится в БД только как SHA-256 hash.
+- Helper session ограничена одним store_id, имеет срок действия и может быть отозвана.
+- .env, базы, токены, IDE-файлы и старые архивы не включены в чистый полный ZIP.
+
+4. ПРОВЕРКИ
+
+- python -m compileall -q app scripts: OK
+- pytest -q: 22 passed
+- additive migration на новой SQLite: OK
+- создание helper_sessions/autopilot/xml tables: OK
+- login + dashboard + automation + XML History + settings templates: HTTP 200
+- helper page/info/consent/tasks: HTTP 200
+- сетевые тесты используют mock; массовые запросы в Kaspi не выполнялись.
+
+Warnings о datetime.utcnow являются предупреждениями совместимости Python 3.13, не ошибками тестов.
+
+5. ЧТО ЗАВИСИТ ОТ ВНЕШНИХ ОГРАНИЧЕНИЙ
+
+- Browser helper работает только если Kaspi разрешает CORS для запроса из браузера телефона.
+- Если CORS запрещён, нужен companion script/Python client с той же временной ссылкой.
+- Проект не обходит CORS, CAPTCHA, антибот, 403, 405 или 429.
+- Появление новой цены в XML не подтверждает мгновенное применение на витрине: Kaspi забирает XML по своему расписанию.
+
+6. УСТАНОВКА PATCH
+
+1) Остановить локальный сервер.
+2) Распаковать patch ZIP.
+3) Запустить INSTALL_PATCH.ps1 с ProjectPath.
+4) Выполнить migrate, compileall и pytest.
+5) git add / commit / push.
+6) На Render поставить ENVIRONMENT=production и переменные из DEPLOY_RENDER.md.
+7) После deploy проверить /automation, /settings, /xml-history и production XML.

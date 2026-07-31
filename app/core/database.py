@@ -28,7 +28,7 @@ else:
     engine_kwargs.update({'pool_size': 5, 'max_overflow': 5, 'pool_recycle': 1800})
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args, **engine_kwargs)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 
 

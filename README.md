@@ -1,24 +1,26 @@
-# Kaspi AutoPrice v3
+# Kaspi AutoPrice v5
 
-Профессиональный FastAPI-сервис для безопасного формирования полного XML-прайса Kaspi.
+FastAPI-сервис для безопасного расчёта цен и публикации полного XML-каталога Kaspi.
 
-## Что исправлено
+## Главное в v5
 
-- PostgreSQL через `DATABASE_URL`; данные не зависят от файловой системы Render.
-- Задания автопилота сохраняются в БД и переживают restart/redeploy.
-- Одновременно на магазин выполняется одно задание.
-- `Stop` ставит задачу на паузу после текущего товара; `Resume` продолжает с курсора. Решения по уже обработанным товарам хранятся в `autopilot_job_items` и не теряются после restart.
-- HTTP 405/429 открывает circuit breaker: новые запросы прекращаются до cooldown.
-- Конкуренты хранятся в PostgreSQL-кэше. При сбое используется разрешённый кэш или прежняя цена.
-- XML всегда строится из полного активного каталога.
-- Кандидатная XML-версия проверяется до публикации. Пустая или резко уменьшившаяся версия получает `rejected`, прежняя остаётся активной.
-- XML хранится в PostgreSQL и отдаётся сразу, без запуска расчёта при запросе Kaspi.
-- Прямой API изменения цены выключен: официальный токен используется только для документированных API-операций.
-- Лимит изменения цен конфигурируется и сохраняется в PostgreSQL; лишние изменения переходят в очередь.
+- Исправлен `DetachedInstanceError`: фоновые задачи получают только `job_id`, а ORM-объекты не используются после закрытия SQLAlchemy Session.
+- Ошибка worker переводит задание в `error`; зависшее задание определяется по heartbeat и не остаётся вечным `running`.
+- Реальное восстановление продолжает работу с сохранённого курсора и показывает уведомление только один раз.
+- Результат телефона/компаньона рассчитывает **один товар сразу**, без повторного прохода по всем товарам.
+- Чтение готового PostgreSQL-кэша не использует сетевую задержку.
+- Полный XML пересобирается с debounce, валидируется и активируется атомарно.
+- Пустой, частичный, дублированный или содержащий нулевую цену XML не публикуется.
+- Production URL отделён от локального `127.0.0.1`.
+- Статистика «Изменено / Без изменений / Ошибки / В очереди» открывает подробный список причин.
+- XML History имеет нормальное пустое состояние, версии, сравнение и журнал запросов.
+- Убраны из интерфейса «Устройства», «Админ», регистрация, Google-вход и DEV/USR-коды.
+- Добавлена временная ссылка «Ускорить проверку через телефон» с явным согласием пользователя.
+- Интерфейс использует Manrope, а короткие крупные заголовки — Unbounded.
 
-## Официальная логика Kaspi
+## Важное ограничение браузера
 
-Открытый Kaspi Гид описывает API-токен для добавления товаров и работы с заказами. Для массового автоматического изменения цен и остатков используется XML-прайс по публичной HTTP/HTTPS-ссылке. Поэтому основной режим проекта — XML. `KASPI_DIRECT_PRICE_API_ENABLED` нельзя включать без официального endpoint, предоставленного Kaspi.
+Браузер не выдаёт отдельное разрешение «использовать IP». Страница сначала делает один CORS-тест. Если Kaspi запрещает cross-origin запрос, браузерный режим честно останавливается и предлагает companion-скрипт. Проект не обходит CORS, CAPTCHA или антибот-защиту и не использует cookies личного кабинета.
 
 ## Локальный запуск Windows
 
@@ -35,102 +37,106 @@ $env:PYTHONPATH="."
 
 Открыть: `http://127.0.0.1:8000`
 
-## Тесты
+Локальный XML предназначен только для проверки. В кабинет Kaspi добавляется:
 
-```powershell
-$env:PYTHONPATH="."
-.\.venv\Scripts\python.exe -m pytest -q
+```text
+https://kaspi-autoprice.onrender.com/kaspi-feed/1.xml
 ```
 
-Сетевые тесты используют mock и не отправляют массовые запросы в Kaspi. Текущий комплект: 19 тестов.
+## Телефон по одной ссылке
+
+1. Откройте `Автопилот`.
+2. Нажмите `Создать ссылку для телефона`.
+3. Откройте ссылку на телефоне.
+4. Прочитайте объяснение и нажмите `Начать проверку`.
+5. Если CORS разрешён, прогресс виден прямо в браузере.
+6. Если CORS заблокирован, страница покажет companion-команду с той же временной сессией — DEV-код вводить не нужно.
+
+Companion fallback:
+
+```powershell
+$env:RENDER_BASE_URL="https://kaspi-autoprice.onrender.com"
+.\.venv\Scripts\python.exe scripts\local_agent.py --helper-url "ВРЕМЕННАЯ_ССЫЛКА" --fast
+```
+
+На Android с Python/Termux команда аналогичная:
+
+```bash
+export RENDER_BASE_URL="https://kaspi-autoprice.onrender.com"
+python scripts/local_agent.py --helper-url "ВРЕМЕННАЯ_ССЫЛКА" --fast
+```
 
 ## Render
 
-Build command:
+Build Command:
 
 ```text
 pip install -r requirements.txt
 ```
 
-Start command:
+Start Command:
 
 ```text
 PYTHONPATH=. python scripts/migrate.py && PYTHONPATH=. python scripts/seed.py && PYTHONPATH=. python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-Обязательно добавьте:
+Минимальные Environment Variables:
 
 ```text
-DATABASE_URL=<Internal Database URL Render Postgres>
+ENVIRONMENT=production
+DATABASE_URL=<Internal Database URL Render PostgreSQL>
 PUBLIC_BASE_URL=https://kaspi-autoprice.onrender.com
-SECRET_KEY=<случайная длинная строка>
+SECRET_KEY=<длинная случайная строка>
 ADMIN_PASSWORD=<новый пароль>
+KASPI_API_TOKEN=<секрет>
+KASPI_MERCHANT_ID=30140513
+KASPI_STORE_ID=30140513
+KASPI_COMPANY_NAME=EXCLUSIVE_KZ
+KASPI_DEFAULT_BRAND=NoBrand
+KASPI_DIRECT_PRICE_API_ENABLED=false
+KASPI_PRICE_UPDATE_FORMAT=xml_catalog
+KASPI_PUBLIC_OFFERS_ENABLED=false
+LEGACY_ACCESS_UI_ENABLED=false
+REGISTRATION_ENABLED=false
+HELPER_BROWSER_ENABLED=true
+HELPER_SESSION_EXPIRE_MINUTES=180
+HELPER_SESSION_BATCH_SIZE=25
+HELPER_XML_DEBOUNCE_SECONDS=20
+KASPI_XML_REBUILD_ON_PULL=false
 ```
 
-Остальные параметры возьмите из `.env.example`.
+`DATABASE_URL` должен быть Internal Database URL PostgreSQL. Локальная SQLite и Render PostgreSQL — разные базы и не синхронизируются автоматически.
 
-## Безопасность
+## Проверка
 
-- `.env`, SQLite, архивы и ZIP исключены из Git.
-- Токены и пароли не выводятся в интерфейсе.
-- Проект не использует Selenium, cookies кабинета, CAPTCHA bypass или маскировку под мобильное приложение.
-- HTTP/HTML ошибки сокращаются перед сохранением.
+```powershell
+$env:PYTHONPATH="."
+.\.venv\Scripts\python.exe -m compileall -q app scripts
+.\.venv\Scripts\python.exe -m pytest -q
+```
 
-## Git
+Проверено: 22 теста. Сетевые запросы в тестах замоканы.
+
+## Git и деплой
 
 ```powershell
 git add .
 git status
-git commit -m "Stable Kaspi AutoPrice v3"
+git commit -m "Kaspi AutoPrice v5 stability and phone helper"
 git push
 ```
 
-## Регистрация и доверенные устройства
+Render автоматически начнёт deploy. После деплоя:
 
-Новые аккаунты создаются только по одноразовому коду `USR`, который владелец выпускает в `/admin`.
-Поддерживаются email/пароль и Google OpenID Connect. Новому пользователю назначается роль `viewer`: он видит только страницу своих устройств и не получает доступ к магазинам, товарам и настройкам цен.
+1. Откройте `/automation`.
+2. Если старое задание действительно зависло, нажмите `Сбросить зависшее задание`.
+3. Создайте полный XML и проверьте количество товаров.
+4. Откройте production XML.
+5. Убедитесь, что XML содержит полный каталог и положительные цены.
+6. Создайте ссылку для телефона и выполните CORS-тест.
 
-Для подключения агента владелец создаёт код `DEV`, привязанный к конкретному пользователю. Агент обменивает этот код на отдельный токен устройства; в базе хранится только SHA-256 хэш токена. В админ-панели видно имя, пользователя, платформу, IP, последнюю активность и статистику. Устройство можно отключить или удалить.
+## Что зависит не от проекта
 
-Render environment:
-
-```env
-REGISTRATION_ENABLED=true
-LOCAL_AGENT_ENABLED=true
-LOCAL_AGENT_ALLOW_LEGACY_TOKEN=false
-KASPI_PUBLIC_OFFERS_ENABLED=false
-PUBLIC_BASE_URL=https://kaspi-autoprice.onrender.com
-```
-
-Первое подключение устройства:
-
-```powershell
-$env:RENDER_BASE_URL="https://kaspi-autoprice.onrender.com"
-.\.venv\Scripts\python.exe scripts\local_agent.py --pair-code "DEV-XXXX-XXXX-XXXX" --device-name "Office PC" --fast
-```
-
-Следующие запуски:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\local_agent.py --fast
-```
-
-Токен сохраняется локально в `~/.kaspi_autoprice_agent.json`. Обычное открытие сайта в браузере телефона агент не запускает; на Android нужен Python/Termux или отдельное клиентское приложение.
-
-### Google вход
-
-Добавьте Web OAuth Client в Google Cloud и зарегистрируйте redirect URI:
-
-```text
-https://kaspi-autoprice.onrender.com/auth/google/callback
-```
-
-Render variables:
-
-```env
-GOOGLE_CLIENT_ID=<client id>
-GOOGLE_CLIENT_SECRET=<client secret>
-GOOGLE_REDIRECT_URI=https://kaspi-autoprice.onrender.com/auth/google/callback
-```
-
-Подробная пошаговая инструкция: `ACCESS_DEVICE_SETUP_RU.md`.
+- Browser helper зависит от CORS Kaspi.
+- Запросы публичной витрины могут получить 403/405/429; проект останавливается безопасно и не обходит ограничения.
+- Публикация XML не доказывает мгновенное применение цены: Kaspi забирает и обрабатывает XML по своему расписанию.

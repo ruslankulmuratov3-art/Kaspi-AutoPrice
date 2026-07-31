@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Ускорить обновление цен</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css?v=5">
+</head>
+<body class="helper-body" data-helper-token="{{ token }}">
+<main class="helper-shell">
+  <section class="helper-card">
+    <div class="helper-brand"><span class="brand-mark">K</span><div><b>Kaspi AutoPrice</b><small>Безопасный помощник</small></div></div>
+    {% if error or not helper_session %}
+      <div class="helper-empty"><h1>Ссылка недействительна</h1><p>{{ error or 'Сессия не найдена.' }}</p></div>
+    {% else %}
+      <div data-helper-consent>
+        <p class="eyebrow">Добровольное подключение</p>
+        <h1>Ускорить обновление цен</h1>
+        <p class="lead">Kaspi может ограничивать запросы с серверов. Это устройство может проверить публичные цены через своё интернет-соединение и передать результат в магазин «{{ store.name if store else 'Kaspi' }}».</p>
+        <div class="privacy-note">
+          <b>Что будет использовано</b>
+          <p>Только интернет-соединение этого устройства и открытые цены товаров. Сервис не получает доступ к камере, файлам, контактам, сообщениям, геолокации или паролям.</p>
+        </div>
+        <div class="helper-facts">
+          <span><small>Срок ссылки</small><b>{{ helper_session.expires_at.strftime('%d.%m %H:%M') }}</b></span>
+          <span><small>Режим</small><b>Только после согласия</b></span>
+        </div>
+        <div class="helper-actions">
+          <button class="btn btn-primary" type="button" data-helper-start>Начать проверку</button>
+          <button class="btn btn-soft" type="button" data-helper-cancel>Отмена</button>
+        </div>
+      </div>
+
+      <div class="helper-runner" data-helper-runner hidden>
+        <div class="card-head"><div><p class="eyebrow">Проверка цен</p><h1>Телефон помогает магазину</h1></div><span class="badge on pulse" data-helper-state>Подключение</span></div>
+        <div class="progress-panel">
+          <div class="progress-head"><b><span data-helper-completed>0</span> обработано</b><span data-helper-percent>0%</span></div>
+          <div class="progress-track"><i data-helper-bar style="width:0%"></i></div>
+        </div>
+        <div class="helper-metrics">
+          <span><small>Успешно</small><b data-helper-success>0</b></span>
+          <span><small>Ошибки</small><b data-helper-errors>0</b></span>
+          <span><small>Осталось</small><b data-helper-left>—</b></span>
+          <span><small>Сеть</small><b data-helper-network>проверка</b></span>
+        </div>
+        <div class="helper-log" data-helper-log>Проверяем, разрешает ли браузер прямое соединение с Kaspi…</div>
+        <div class="helper-actions">
+          <button class="btn btn-danger" type="button" data-helper-stop>Остановить</button>
+        </div>
+      </div>
+
+      <div class="helper-fallback" data-helper-fallback hidden>
+        <p class="eyebrow">Нужен компаньон</p>
+        <h1>Браузер заблокировал прямой запрос</h1>
+        <p class="lead">Это ограничение CORS браузера, а не ошибка телефона. Обходить его нельзя. Используйте ту же временную ссылку в приложении-компаньоне или Termux.</p>
+        <div class="copy-box"><code id="helper-command">python scripts/local_agent.py --helper-url "{{ request.url }}" --fast</code><button class="btn btn-small" type="button" data-copy="#helper-command">Копировать</button></div>
+        <p class="muted small-note">Ссылка временная и даёт доступ только к проверке конкурентов этого магазина.</p>
+      </div>
+    {% endif %}
+  </section>
+</main>
+<script src="/static/js/helper.js?v=5"></script>
+<script src="/static/js/app.js?v=5"></script>
+</body>
+</html>

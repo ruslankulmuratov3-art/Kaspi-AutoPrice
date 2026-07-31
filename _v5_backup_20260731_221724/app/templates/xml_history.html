@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}XML — Kaspi AutoPrice{% endblock %}
+{% block content %}
+<section class="hero-card reveal">
+  <div><p class="eyebrow">XML</p><h1>Версии и запросы</h1><p class="lead">Полный каталог, отклонённые версии и история скачиваний.</p></div>
+  <div class="hero-actions"><a class="btn btn-primary" href="/automation?store_id={{ selected_store_id }}">Автопилот</a>{% if feed_url %}<a class="btn btn-soft" href="{{ feed_url }}" target="_blank">Открыть XML</a>{% endif %}</div>
+</section>
+{% if message %}<div class="notice success toast-auto">{{ message }}</div>{% endif %}
+{% if error %}<div class="notice danger toast-auto">{{ error }}</div>{% endif %}
+
+<section class="premium-card reveal delay-1">
+  <form class="form-grid" method="get" action="/xml-history">
+    <label>Магазин<select name="store_id" onchange="this.form.submit()">{% for store in stores %}<option value="{{ store.id }}" {% if store.id == selected_store_id %}selected{% endif %}>{{ store.name }} · {{ store.merchant_id }}</option>{% endfor %}</select></label>
+    <label>Версия<select name="feed_id" onchange="this.form.submit()">{% for version in versions %}<option value="{{ version.feed_id }}" {% if version.feed_id == selected_feed_id %}selected{% endif %}>{{ version.updated_at }} · {{ version.product_count }} товаров · {{ version.status }}</option>{% endfor %}</select></label>
+  </form>
+</section>
+
+<section class="grid-2 reveal delay-2">
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Файлы</p><h2>Версии XML</h2></div><span class="badge">{{ versions|length }}</span></div>
+    <div class="mini-timeline version-list">
+      {% for version in versions %}
+      <div class="timeline-row version-row {{ 'active-version' if version.is_active else '' }}">
+        <a class="version-main" href="/xml-history?store_id={{ selected_store_id }}&feed_id={{ version.feed_id }}">
+          <b>{{ version.updated_at }}</b>
+          <span>{{ version.product_count }} товаров · {{ version.changed }} цен</span>
+          <small>{{ (version.size_bytes / 1024)|round(1) }} KB · {{ version.status }}{% if version.rejection_reason %} · {{ version.rejection_reason }}{% endif %}</small>
+        </a>
+        <div class="version-actions">
+          <a class="btn btn-small" href="/xml-history/download/{{ selected_store_id }}/{{ version.feed_id }}">Скачать</a>
+          {% if not version.is_active and version.status != 'rejected' %}
+          <form method="post" action="/xml-history/activate"><input type="hidden" name="store_id" value="{{ selected_store_id }}"><input type="hidden" name="feed_id" value="{{ version.feed_id }}"><button class="btn btn-small btn-soft">Активировать</button></form>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      {% if not versions %}<div class="empty-archive">XML ещё не создавался.</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="premium-card">
+    <div class="card-head"><div><p class="eyebrow">Запросы</p><h2>Кто открывал XML</h2></div><span class="badge">{{ pulls|length }}</span></div>
+    <div class="mini-timeline">
+      {% for pull in pulls %}<div class="timeline-row"><b>{{ pull.accessed_at }}</b><span>{{ 'похоже Kaspi' if pull.likely_kaspi else 'браузер/проверка' }}</span><small>{{ pull.ip }} · HTTP {{ pull.response_status }} · {{ pull.user_agent[:70] }}</small></div>{% endfor %}
+      {% if not pulls %}<div class="empty-archive">Запросов пока нет.</div>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="premium-card reveal delay-3">
+  <div class="card-head">
+    <div><p class="eyebrow">Цены</p><h2>Выбранная версия</h2>{% if selected_version %}<p class="muted">{{ selected_version.updated_at }} · {{ selected_version.product_count }} товаров · {{ selected_version.changed }} изменений</p>{% endif %}</div>
+    {% if selected_version %}<a class="btn btn-small" href="/xml-history/download/{{ selected_store_id }}/{{ selected_version.feed_id }}">Скачать XML</a>{% endif %}
+  </div>
+  {% if details %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Товар</th><th>SKU</th><th>Было</th><th>В XML</th><th>Источник</th><th>Причина</th></tr></thead>
+      <tbody>{% for item in details %}<tr class="{{ 'changed-row' if item.changed else '' }}"><td><b>{{ item.name }}</b><small>{{ item.status }}</small></td><td><code>{{ item.sku }}</code></td><td>{{ item.old_price }} ₸</td><td><b>{{ item.new_price }} ₸</b></td><td><small>{{ item.cache_state or item.data_source or '—' }}</small></td><td><small>{{ item.reason }}</small></td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% else %}<div class="empty-archive">Деталей пока нет.</div>{% endif %}
+</section>
+{% endblock %}
