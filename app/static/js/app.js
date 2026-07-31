@@ -26,7 +26,17 @@
     setTimeout(()=>node.remove(),250);
   },5200));
 
-  qsa('form').forEach(form=>form.addEventListener('submit',()=>{
+  qsa('form').forEach(form=>form.addEventListener('submit',event=>{
+    if(form.querySelector('[data-requires-selection]')&&selectedIds().length===0){
+      event.preventDefault();
+      toast('Сначала выберите товары');
+      return;
+    }
+    const confirmText=form.dataset.confirm||'';
+    if(confirmText&&!window.confirm(confirmText)){
+      event.preventDefault();
+      return;
+    }
     const button=form.querySelector('button[type="submit"],button:not([type])');
     if(!button||button.dataset.noLoading)return;
     button.dataset.oldText=button.innerHTML;
@@ -45,25 +55,45 @@
     try{await navigator.clipboard.writeText(text);toast('Скопировано')}catch{toast('Скопируйте вручную')}
   }));
 
-  const selectedIds=()=>qsa('.product-check:checked').map(input=>input.value).filter(Boolean);
+  const productChecks=()=>qsa('.product-check');
+  const selectedIds=()=>[...new Set(productChecks().filter(input=>input.checked).map(input=>input.value).filter(Boolean))];
+  const uniqueProductIds=()=>[...new Set(productChecks().map(input=>input.value).filter(Boolean))];
   const updateSelected=()=>{
     const count=selectedIds().length;
+    const total=uniqueProductIds().length;
     qsa('[data-selected-count]').forEach(node=>node.textContent=String(count));
     const all=qs('[data-select-all]');
-    const checks=qsa('.product-check');
-    if(all&&checks.length){
-      all.checked=count===checks.length;
-      all.indeterminate=count>0&&count<checks.length;
+    if(all&&total){
+      all.checked=count===total;
+      all.indeterminate=count>0&&count<total;
     }
+    qsa('[data-requires-selection]').forEach(button=>button.disabled=count===0);
   };
-  qsa('.product-check').forEach(input=>input.addEventListener('change',updateSelected));
+  productChecks().forEach(input=>input.addEventListener('change',event=>{
+    // Desktop table and mobile cards contain mirrored checkboxes. Keep both views
+    // synchronized and count each product only once.
+    productChecks().filter(other=>other.value===event.target.value).forEach(other=>other.checked=event.target.checked);
+    updateSelected();
+  }));
   qs('[data-select-all]')?.addEventListener('change',event=>{
-    qsa('.product-check').forEach(input=>input.checked=event.target.checked);
+    productChecks().forEach(input=>input.checked=event.target.checked);
     updateSelected();
   });
-  qsa('.selection-aware-form').forEach(form=>form.addEventListener('submit',()=>{
+  qsa('[data-clear-selection]').forEach(button=>button.addEventListener('click',()=>{
+    productChecks().forEach(input=>input.checked=false);
+    const all=qs('[data-select-all]');
+    if(all){all.checked=false;all.indeterminate=false;}
+    updateSelected();
+  }));
+  qsa('.selection-aware-form').forEach(form=>form.addEventListener('submit',event=>{
     qsa('input[data-generated-selection]',form).forEach(node=>node.remove());
-    selectedIds().forEach(id=>{
+    const ids=selectedIds();
+    if(form.querySelector('[data-requires-selection]')&&ids.length===0){
+      event.preventDefault();
+      toast('Сначала выберите товары');
+      return;
+    }
+    ids.forEach(id=>{
       const hidden=document.createElement('input');
       hidden.type='hidden';
       hidden.name='product_ids';

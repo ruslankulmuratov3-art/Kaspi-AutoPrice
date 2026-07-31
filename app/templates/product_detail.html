@@ -11,10 +11,17 @@
     <p class="lead">{{ product.kaspi_sku }}{% if product.product_id %} · {{ product.product_id }}{% endif %}{% if product.url %} · <a class="link" href="{{ product.url }}" target="_blank">Kaspi</a>{% endif %}</p>
   </div>
   <div class="hero-actions">
-    {% if can_refresh_competitors %}
-    <form method="post" action="/pricing/refresh/{{ product.id }}"><button class="btn btn-soft">Обновить конкурентов</button></form>
+    {% if can_refresh_competitors and product.status.value != 'archived' %}
+    <form method="post" action="/pricing/refresh/{{ product.id }}"><button class="btn btn-soft">Обновить и пересчитать</button></form>
+    {% elif competitor_info.available and product.status.value != 'archived' %}
+    <form method="post" action="/products/{{ product.id }}/recalculate"><button class="btn btn-soft">Пересчитать товар</button></form>
     {% endif %}
     <a class="btn btn-primary" href="/automation?store_id={{ product.store_id }}">Автопилот</a>
+    {% if product.status.value == 'archived' %}
+    <form method="post" action="/products/{{ product.id }}/restore"><button class="btn btn-soft" type="submit">Восстановить</button></form>
+    {% else %}
+    <form method="post" action="/products/{{ product.id }}/archive" data-confirm="Удалить товар из активного каталога? Его можно восстановить через фильтр «Архив»."><button class="btn btn-danger" type="submit">Удалить</button></form>
+    {% endif %}
   </div>
 </section>
 
@@ -52,7 +59,23 @@
   </form>
 
   <div class="premium-card">
-    <div class="card-head"><div><p class="eyebrow">Конкуренты</p><h2>Последние цены</h2></div></div>
+    <div class="card-head">
+      <div><p class="eyebrow">Конкуренты</p><h2>Последние цены</h2></div>
+      {% if competitor_info.available %}<span class="badge on">{{ competitor_info.offer_count }} предлож.</span>{% endif %}
+    </div>
+    {% if competitor_info.available %}
+    <div class="competitor-summary">
+      <div><small>Минимальная цена</small><b>{{ competitor_info.minimum_price|money }}</b></div>
+      <div><small>Источник</small><b>{{ competitor_info.source_label }}</b></div>
+      <div><small>Обновлено</small><b>{{ competitor_info.fetched_at }}</b></div>
+    </div>
+    {% if competitor_info.decision %}
+    <div class="notice {{ 'success' if competitor_info.decision.status in ['changed','unchanged'] else 'info' }} compact">
+      <b>{{ 'Цена уже оптимальна' if competitor_info.decision.status == 'unchanged' else ('Можно изменить до ' ~ (competitor_info.decision.suggested_price|money) if competitor_info.decision.status == 'changed' else 'Цена оставлена безопасной') }}</b>
+      <span>{{ competitor_info.decision.reason }}</span>
+    </div>
+    {% endif %}
+    {% endif %}
     <div class="stack">
       {% for o in product.competitor_offers %}
       <div class="list-item"><div><b>#{{ o.position }} {{ o.seller_name }}</b><small>доставка {{ o.delivery_days }} дн.</small></div><span class="badge">{{ o.price|money }}</span></div>

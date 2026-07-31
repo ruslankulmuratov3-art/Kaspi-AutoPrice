@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from urllib.parse import quote
 from pathlib import Path
 from io import BytesIO
@@ -17,7 +17,7 @@ from app.models.pricing_rule import PricingRule, PricingStrategy
 from app.models.alert import Alert, AlertType
 from app.models.user import User, UserRole
 from app.models.helper import HelperSession
-from app.models.autopilot import AutopilotJob, AutopilotJobItem, AutopilotJobStatus, CompetitorSourceState
+from app.models.autopilot import AutopilotJob, AutopilotJobItem, AutopilotJobStatus, CompetitorSnapshot, CompetitorSourceState
 from app.repositories.users import users
 from app.services.auth_service import auth_service
 from app.services.report_service import report_service
@@ -33,6 +33,8 @@ from app.services.competitor_service import CompetitorUnavailable, competitor_se
 from app.services.search_service import product_text_matches
 from app.services.helper_session_service import helper_session_service
 from app.services.incremental_pricing_service import incremental_pricing_service
+from app.services.result_view_service import result_view_service
+from app.services.kaspi_client import KaspiApiError, kaspi_client
 from app.web.templating import templates
 from app.web.deps import current_user_optional
 
@@ -321,12 +323,26 @@ def products_page(
     query = db.query(Product)
     if selected_store_id:
         query = query.filter(Product.store_id == selected_store_id)
-    if view == 'ready':
-        query = query.filter(Product.auto_pricing_enabled == True, Product.min_price > 0, Product.max_price > 0)
-    elif view == 'pending':
-        query = query.filter(or_(Product.auto_pricing_enabled == False, Product.min_price <= 0, Product.max_price <= 0))
-    elif view == 'active':
-        query = query.filter(Product.status == ProductStatus.ACTIVE)
+    if view == 'archived':
+        query = query.filter(Product.status == ProductStatus.ARCHIVED)
+    else:
+        # "Все" means every product still present in the working catalog. Archived
+        # rows are intentionally separated so they cannot be selected by accident.
+        query = query.filter(Product.status != ProductStatus.ARCHIVED)
+        if view == 'ready':
+            query = query.filter(
+                Product.auto_pricing_enabled == True,
+                Product.min_price > 0,
+                Product.max_price > 0,
+            )
+        elif view == 'pending':
+            query = query.filter(or_(
+                Product.auto_pricing_enabled == False,
+                Product.min_price <= 0,
+                Product.max_price <= 0,
+            ))
+        elif view == 'active':
+            query = query.filter(Product.status == ProductStatus.ACTIVE)
     try:
         show_limit = int(show_limit or 500)
     except (TypeError, ValueError):
@@ -341,9 +357,15 @@ def products_page(
         products = source_products
 
     pending_query = db.query(Product).filter(
-        or_(Product.auto_pricing_enabled == False, Product.min_price <= 0, Product.max_price <= 0)
+        Product.status != ProductStatus.ARCHIVED,
+        or_(Product.auto_pricing_enabled == False, Product.min_price <= 0, Product.max_price <= 0),
     )
-    ready_query = db.query(Product).filter(Product.auto_pricing_enabled == True, Product.min_price > 0, Product.max_price > 0)
+    ready_query = db.query(Product).filter(
+        Product.status != ProductStatus.ARCHIVED,
+        Product.auto_pricing_enabled == True,
+        Product.min_price > 0,
+        Product.max_price > 0,
+    )
     if selected_store_id:
         pending_query = pending_query.filter(Product.store_id == selected_store_id)
         ready_query = ready_query.filter(Product.store_id == selected_store_id)
@@ -380,26 +402,46 @@ def create_product_page(
     request: Request,
     store_id: int = Form(...),
     kaspi_sku: str = Form(...),
+    product_id: str = Form(''),
     url: str = Form(''),
     name: str = Form(...),
     current_price: float = Form(0),
     min_price: float = Form(0),
     max_price: float = Form(0),
     cost_price: float = Form(0),
+    stock: int = Form(0),
     db: Session = Depends(get_db),
 ):
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
+    sku = kaspi_sku.strip()
+    if not sku:
+        return RedirectResponse(f'/products?store_id={store_id}&error=' + quote('Укажите SKU товара.'), status_code=303)
+    existing = db.query(Product).filter(Product.store_id == int(store_id), Product.kaspi_sku == sku).first()
+    if existing:
+        return RedirectResponse(
+            f'/products/{existing.id}?error=' + quote('Товар с таким SKU уже существует. Откройте его и измените настройки.'),
+            status_code=303,
+        )
+    public_id = product_id.strip()
+    if not public_id:
+        probe = Product(store_id=store_id, kaspi_sku=sku, product_id='', name=name.strip() or sku, url=url.strip())
+        try:
+            public_id = kaspi_client.extract_public_product_id(probe)
+        except KaspiApiError:
+            public_id = ''
     product = Product(
         store_id=store_id,
-        kaspi_sku=kaspi_sku.strip(),
+        kaspi_sku=sku,
+        product_id=public_id,
         url=url.strip(),
-        name=name.strip(),
+        name=name.strip() or sku,
         current_price=current_price,
         min_price=min_price,
         max_price=max_price,
         cost_price=cost_price,
+        stock=stock,
         status=ProductStatus.ACTIVE if min_price > 0 and max_price > 0 else ProductStatus.PAUSED,
         auto_pricing_enabled=True if min_price > 0 and max_price > 0 else False,
     )
@@ -407,7 +449,133 @@ def create_product_page(
     db.flush()
     db.add(PricingRule(product_id=product.id))
     db.commit()
-    return RedirectResponse('/products?message=' + quote('Товар добавлен'), status_code=303)
+    return RedirectResponse(f'/products/{product.id}?message=' + quote('Товар добавлен'), status_code=303)
+
+
+def _release_product_leases(db: Session, product_ids: list[int]) -> None:
+    if not product_ids:
+        return
+    snapshots = db.query(CompetitorSnapshot).filter(CompetitorSnapshot.product_id.in_(product_ids)).all()
+    for snapshot in snapshots:
+        snapshot.lease_owner = ''
+        snapshot.lease_token = ''
+        snapshot.lease_started_at = None
+        snapshot.lease_until = None
+        db.add(snapshot)
+
+
+def _schedule_catalog_xml(background_tasks: BackgroundTasks, store_ids: set[int]) -> None:
+    # Rebuild happens after the redirect, so deleting a product never keeps the
+    # browser waiting long enough to trigger a Render gateway timeout.
+    for store_id in sorted(store_ids):
+        background_tasks.add_task(incremental_pricing_service.rebuild_xml_now, int(store_id))
+
+
+@web_router.post('/products/bulk-action')
+def bulk_product_action_page(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    action: str = Form(...),
+    store_id: int = Form(0),
+    q: str = Form(''),
+    view: str = Form('all'),
+    product_ids: list[int] | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    selected_ids = sorted({int(value) for value in (product_ids or []) if int(value) > 0})
+    redirect_url = f'/products?store_id={store_id}&view={quote(view)}&q={quote(q)}'
+    if not selected_ids:
+        return RedirectResponse(redirect_url + '&error=' + quote('Сначала выберите хотя бы один товар.'), status_code=303)
+
+    query = db.query(Product).filter(Product.id.in_(selected_ids))
+    if store_id:
+        query = query.filter(Product.store_id == int(store_id))
+    products_to_change = query.all()
+    if not products_to_change:
+        return RedirectResponse(redirect_url + '&error=' + quote('Выбранные товары не найдены.'), status_code=303)
+
+    affected_store_ids = {int(product.store_id) for product in products_to_change}
+    if action == 'archive':
+        for product in products_to_change:
+            product.status = ProductStatus.ARCHIVED
+            product.auto_pricing_enabled = False
+            product.last_autopilot_error = ''
+            db.add(product)
+        _release_product_leases(db, [int(product.id) for product in products_to_change])
+        message = f'Удалено из активного каталога: {len(products_to_change)}. Товары можно восстановить через фильтр «Архив».'
+        next_view = 'all'
+    elif action == 'restore':
+        for product in products_to_change:
+            ready = float(product.min_price or 0) > 0 and float(product.max_price or 0) > 0
+            product.status = ProductStatus.ACTIVE if ready else ProductStatus.PAUSED
+            product.auto_pricing_enabled = ready
+            db.add(product)
+        message = f'Восстановлено товаров: {len(products_to_change)}.'
+        next_view = 'archived'
+    else:
+        return RedirectResponse(redirect_url + '&error=' + quote('Неизвестное действие.'), status_code=303)
+
+    db.commit()
+    _schedule_catalog_xml(background_tasks, affected_store_ids)
+    return RedirectResponse(
+        f'/products?store_id={store_id}&view={next_view}&message=' + quote(message),
+        status_code=303,
+    )
+
+
+@web_router.post('/products/{product_id}/archive')
+def archive_product_page(
+    request: Request,
+    product_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    product = db.query(Product).filter(Product.id == int(product_id)).first()
+    if not product:
+        return RedirectResponse('/products?error=' + quote('Товар не найден.'), status_code=303)
+    store_id = int(product.store_id)
+    product.status = ProductStatus.ARCHIVED
+    product.auto_pricing_enabled = False
+    product.last_autopilot_error = ''
+    db.add(product)
+    _release_product_leases(db, [int(product.id)])
+    db.commit()
+    _schedule_catalog_xml(background_tasks, {store_id})
+    return RedirectResponse(
+        f'/products?store_id={store_id}&message=' + quote('Товар удалён из активного каталога. Его можно восстановить в разделе «Архив».'),
+        status_code=303,
+    )
+
+
+@web_router.post('/products/{product_id}/restore')
+def restore_product_page(
+    request: Request,
+    product_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    product = db.query(Product).filter(Product.id == int(product_id)).first()
+    if not product:
+        return RedirectResponse('/products?view=archived&error=' + quote('Товар не найден.'), status_code=303)
+    ready = float(product.min_price or 0) > 0 and float(product.max_price or 0) > 0
+    product.status = ProductStatus.ACTIVE if ready else ProductStatus.PAUSED
+    product.auto_pricing_enabled = ready
+    db.add(product)
+    db.commit()
+    _schedule_catalog_xml(background_tasks, {int(product.store_id)})
+    return RedirectResponse(
+        f'/products?store_id={product.store_id}&view=archived&message=' + quote('Товар восстановлен.'),
+        status_code=303,
+    )
 
 
 @web_router.post('/products/import-kaspi-excel')
@@ -517,9 +685,20 @@ def product_detail(request: Request, product_id: int, db: Session = Depends(get_
         db.add(PricingRule(product_id=product.id))
         db.commit()
         db.refresh(product)
-    visible_sources = ['kaspi_confirmed', 'price_list_confirmed', 'xml_prepared', 'manual']
+    visible_sources = ['kaspi_confirmed', 'price_list_confirmed', 'xml_prepared', 'manual', 'helper_incremental']
     confirmed_history = db.query(PriceHistory).filter(PriceHistory.product_id == product.id, PriceHistory.source.in_(visible_sources)).order_by(PriceHistory.created_at.desc()).limit(20).all()
-    return templates.TemplateResponse('product_detail.html', {'request': request, 'user': user, 'product': product, 'confirmed_history': confirmed_history, 'strategies': PricingStrategy, 'can_refresh_competitors': bool(settings.KASPI_PUBLIC_OFFERS_ENABLED), 'message': request.query_params.get('message', ''), 'error': request.query_params.get('error', '')})
+    competitor_info = result_view_service.product_snapshot_view(db, product)
+    return templates.TemplateResponse('product_detail.html', {
+        'request': request,
+        'user': user,
+        'product': product,
+        'confirmed_history': confirmed_history,
+        'competitor_info': competitor_info,
+        'strategies': PricingStrategy,
+        'can_refresh_competitors': bool(settings.KASPI_PUBLIC_OFFERS_ENABLED),
+        'message': request.query_params.get('message', ''),
+        'error': request.query_params.get('error', ''),
+    })
 
 
 @web_router.post('/products/{product_id}/settings')
@@ -605,23 +784,71 @@ async def refresh_competitors_page(request: Request, product_id: int, db: Sessio
     if not user:
         return login_redirect()
     product = db.query(Product).filter(Product.id == product_id).first()
-    if product:
-        # В production прямые запросы с Render обычно выключены. Не показываем
-        # пользователю техническое сообщение про локального агента и не создаём
-        # ложную ошибку: сохранённые конкуренты уже отображаются на странице.
-        if not settings.KASPI_PUBLIC_OFFERS_ENABLED:
-            return RedirectResponse(f'/products/{product_id}', status_code=303)
-        try:
-            await pricing_engine.refresh_competitors(db, product)
-            return RedirectResponse(f'/products/{product_id}?message=' + quote('Данные конкурентов обновлены. Цена Kaspi не менялась.'), status_code=303)
-        except CompetitorUnavailable:
-            return RedirectResponse(f'/products/{product_id}', status_code=303)
-        except Exception as exc:
-            error_text = str(exc)[:350]
-            db.add(Alert(title='Не удалось обновить конкурентов', body=error_text, type=AlertType.API_ERROR))
-            db.commit()
-            return RedirectResponse(f'/products/{product_id}?error=' + quote('Не удалось обновить данные конкурентов.'), status_code=303)
-    return RedirectResponse(f'/products/{product_id}', status_code=303)
+    if not product:
+        return RedirectResponse('/products?error=' + quote('Товар не найден.'), status_code=303)
+    # Render is intentionally not used as a public-offers proxy. The button is hidden
+    # there, but this guard also protects an old cached page or a direct POST request.
+    if not settings.KASPI_PUBLIC_OFFERS_ENABLED:
+        return RedirectResponse(
+            f'/products/{product_id}?message=' + quote('На сервере прямое обновление выключено. Используйте автопилот или ссылку для телефона.'),
+            status_code=303,
+        )
+    try:
+        await pricing_engine.refresh_competitors(db, product, force=True)
+        result = await incremental_pricing_service.process_product(
+            product.id,
+            source_device='manual-browser',
+            http_status=200,
+        )
+        if result.get('ok') and result.get('status') == 'changed':
+            message = f"Конкуренты обновлены. Рассчитано: {int(result.get('old_price') or 0)} → {int(result.get('new_price') or 0)} ₸. XML обновится автоматически."
+        elif result.get('ok') and result.get('status') == 'unchanged':
+            message = 'Конкуренты обновлены. Текущая цена уже оптимальна, поэтому изменение не требуется.'
+        elif result.get('ok'):
+            message = f"Конкуренты обновлены. Цена оставлена прежней: {result.get('reason') or 'безопасное ограничение'}."
+        else:
+            message = 'Конкуренты обновлены, но расчёт товара не завершился. Нажмите «Пересчитать товар».'
+        return RedirectResponse(f'/products/{product_id}?message=' + quote(message[:500]), status_code=303)
+    except CompetitorUnavailable as exc:
+        return RedirectResponse(f'/products/{product_id}?message=' + quote(str(exc)[:350]), status_code=303)
+    except Exception as exc:
+        error_text = str(exc)[:350]
+        db.add(Alert(title='Не удалось обновить конкурентов', body=error_text, type=AlertType.API_ERROR))
+        db.commit()
+        return RedirectResponse(f'/products/{product_id}?error=' + quote('Не удалось обновить данные конкурентов.'), status_code=303)
+
+
+@web_router.post('/products/{product_id}/recalculate')
+async def recalculate_product_page(request: Request, product_id: int, db: Session = Depends(get_db)):
+    user = ensure_user(request, db)
+    if not user:
+        return login_redirect()
+    product = db.query(Product).filter(Product.id == int(product_id)).first()
+    if not product:
+        return RedirectResponse('/products?error=' + quote('Товар не найден.'), status_code=303)
+    snapshot = db.query(CompetitorSnapshot).filter(CompetitorSnapshot.product_id == int(product.id)).first()
+    if not snapshot or not snapshot.fetched_at or not competitor_service._offers_from_snapshot(snapshot):
+        return RedirectResponse(
+            f'/products/{product_id}?error=' + quote('Сохранённых данных конкурентов пока нет.'),
+            status_code=303,
+        )
+    result = await incremental_pricing_service.process_product(
+        product.id,
+        source_device='manual-recalculate',
+        http_status=snapshot.http_status,
+    )
+    if not result.get('ok'):
+        return RedirectResponse(
+            f'/products/{product_id}?error=' + quote(str(result.get('reason') or 'Не удалось пересчитать товар.')[:350]),
+            status_code=303,
+        )
+    if result.get('status') == 'changed':
+        message = f"Товар пересчитан: {int(result.get('old_price') or 0)} → {int(result.get('new_price') or 0)} ₸. Изменение добавлено в XML."
+    elif result.get('status') == 'unchanged':
+        message = 'Товар пересчитан. Текущая цена уже оптимальна.'
+    else:
+        message = f"Товар пересчитан. Цена оставлена прежней: {result.get('reason') or 'безопасное ограничение'}."
+    return RedirectResponse(f'/products/{product_id}?message=' + quote(message[:500]), status_code=303)
 
 
 @web_router.post('/pricing/push/{product_id}')
@@ -856,7 +1083,10 @@ def automation_results_page(
     user = ensure_user(request, db)
     if not user:
         return login_redirect()
-    job = db.query(AutopilotJob).filter(AutopilotJob.id == int(job_id)).first() if job_id else (
+    job = db.query(AutopilotJob).filter(
+        AutopilotJob.id == int(job_id),
+        AutopilotJob.store_id == int(store_id),
+    ).first() if job_id else (
         db.query(AutopilotJob).filter(AutopilotJob.store_id == int(store_id)).order_by(AutopilotJob.id.desc()).first()
     )
     rows = []
@@ -872,7 +1102,8 @@ def automation_results_page(
             query = query.filter(AutopilotJobItem.status == 'error')
         elif status_filter == 'queued':
             query = query.filter(AutopilotJobItem.status == 'queued')
-        rows = query.order_by(AutopilotJobItem.updated_at.desc()).limit(1000).all()
+        historical_rows = query.order_by(AutopilotJobItem.updated_at.desc()).limit(1000).all()
+        rows = result_view_service.build(db, historical_rows)
     return templates.TemplateResponse('automation_results.html', {
         'request': request,
         'user': user,

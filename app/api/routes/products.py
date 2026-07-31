@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.models.product import Product
+from app.models.product import Product, ProductStatus
 from app.models.pricing_rule import PricingRule
 from app.models.user import User
 from app.repositories.products import products
@@ -43,3 +43,15 @@ def update_product(product_id: int, payload: ProductUpdate, db: Session = Depend
     if not product:
         raise HTTPException(404, 'Product not found')
     return products.update(db, product, **payload.model_dump(exclude_unset=True))
+
+
+@router.delete('/{product_id}', status_code=204)
+def archive_product(product_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    product = products.get(db, product_id)
+    if not product:
+        raise HTTPException(404, 'Product not found')
+    product.status = ProductStatus.ARCHIVED
+    product.auto_pricing_enabled = False
+    db.add(product)
+    db.commit()
+    return Response(status_code=204)

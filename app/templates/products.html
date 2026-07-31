@@ -11,7 +11,8 @@
     <p class="lead">Загрузите ACTIVE.xlsx один раз. Автопилот дальше работает с сохранёнными товарами.</p>
   </div>
   <div class="hero-actions">
-    <a class="btn btn-primary" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Автопилот</a>
+    <a class="btn btn-primary" href="#add-product">Добавить товар</a>
+    <a class="btn btn-soft" href="/automation{% if selected_store_id %}?store_id={{ selected_store_id }}{% endif %}">Автопилот</a>
     <a class="btn btn-soft" href="/stores">Магазины</a>
   </div>
 </section>
@@ -26,6 +27,7 @@
       {% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }} · {{ s.merchant_id }}</option>{% endfor %}
     </select>
     <input type="hidden" name="q" value="{{ q }}">
+    <input type="hidden" name="view" value="{{ view }}">
   </form>
 </section>
 
@@ -69,6 +71,27 @@
   </div>
 </section>
 
+<section id="add-product" class="premium-card reveal">
+  <div class="card-head">
+    <div><p class="eyebrow">Добавление</p><h2>Новый товар</h2><p class="muted">Добавьте один товар вручную. Для большого каталога используйте ACTIVE.xlsx.</p></div>
+  </div>
+  <form class="form" method="post" action="/products">
+    <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+    <div class="form-grid">
+      <label>SKU<input name="kaspi_sku" required placeholder="Артикул продавца"></label>
+      <label>Product ID<input name="product_id" placeholder="Можно оставить пустым"></label>
+      <label class="span-2">Название<input name="name" required></label>
+      <label class="span-2">Ссылка Kaspi<input name="url" placeholder="https://kaspi.kz/shop/p/..."></label>
+      <label>Цена<input name="current_price" type="number" value="0" min="0"></label>
+      <label>Остаток<input name="stock" type="number" value="0" min="0"></label>
+      <label>Минимум<input name="min_price" type="number" value="0" min="0"></label>
+      <label>Максимум<input name="max_price" type="number" value="0" min="0"></label>
+      <label>Себестоимость<input name="cost_price" type="number" value="0" min="0"></label>
+    </div>
+    <button class="btn btn-primary" type="submit">Добавить товар</button>
+  </form>
+</section>
+
 <section class="premium-card product-list">
   <div class="card-head"><div><p class="eyebrow">Каталог</p><h2>Товары</h2><p class="muted">Поиск по названию, SKU и product_id.</p></div></div>
   <form class="searchbar" method="get">
@@ -79,6 +102,7 @@
       <option value="ready" {% if view == 'ready' %}selected{% endif %}>Готовые</option>
       <option value="pending" {% if view == 'pending' %}selected{% endif %}>Настроить</option>
       <option value="active" {% if view == 'active' %}selected{% endif %}>Активные</option>
+      <option value="archived" {% if view == 'archived' %}selected{% endif %}>Архив</option>
     </select>
     <input name="show_limit" type="number" min="50" max="2000" step="50" value="{{ show_limit or 500 }}" title="Сколько показать">
     <button class="btn btn-soft">Найти</button>
@@ -88,6 +112,15 @@
     <label class="check-inline"><input type="checkbox" data-select-all> Выбрать показанные</label>
     <span class="selection-chip">Выбрано: <b data-selected-count>0</b></span>
     <button class="btn btn-small btn-ghost" type="button" data-clear-selection>Снять</button>
+    <form class="selection-aware-form inline-bulk-form" method="post" action="/products/bulk-action" data-confirm="{% if view == 'archived' %}Восстановить выбранные товары?{% else %}Удалить выбранные товары из активного каталога? Их можно будет восстановить через фильтр «Архив».{% endif %}">
+      <input type="hidden" name="store_id" value="{{ selected_store_id or 0 }}">
+      <input type="hidden" name="q" value="{{ q }}">
+      <input type="hidden" name="view" value="{{ view }}">
+      <input type="hidden" name="action" value="{{ 'restore' if view == 'archived' else 'archive' }}">
+      <button class="btn btn-small {{ 'btn-soft' if view == 'archived' else 'btn-danger' }}" type="submit" data-requires-selection disabled>
+        {{ 'Восстановить выбранные' if view == 'archived' else 'Удалить выбранные' }}
+      </button>
+    </form>
   </div>
 
   <div class="table-wrap product-table">
@@ -101,7 +134,16 @@
         <td>{{ p.current_price|money }}</td>
         <td>{{ p.min_price|money }} — {{ p.max_price|money }}</td>
         <td><span class="badge {{ 'on' if p.auto_pricing_enabled else 'status-pending' }}">{{ 'вкл' if p.auto_pricing_enabled else 'выкл' }}</span></td>
-        <td><a class="btn btn-small" href="/products/{{ p.id }}">Открыть</a></td>
+        <td>
+          <div class="inline-actions row-actions">
+            <a class="btn btn-small" href="/products/{{ p.id }}">Открыть</a>
+            {% if p.status.value == 'archived' %}
+            <form method="post" action="/products/{{ p.id }}/restore"><button class="btn btn-small btn-soft" type="submit">Восстановить</button></form>
+            {% else %}
+            <form method="post" action="/products/{{ p.id }}/archive" data-confirm="Удалить товар из активного каталога? Его можно будет восстановить через фильтр «Архив»."><button class="btn btn-small btn-danger" type="submit">Удалить</button></form>
+            {% endif %}
+          </div>
+        </td>
       </tr>
       {% endfor %}
       {% if not products %}<tr><td colspan="6" class="muted">Товаров нет. Загрузите ACTIVE.xlsx.</td></tr>{% endif %}
@@ -120,6 +162,11 @@
         <span>Лимиты<br><b>{{ p.min_price|money }} — {{ p.max_price|money }}</b></span>
       </div>
       <div class="inline-actions"><span class="badge {{ 'on' if p.auto_pricing_enabled else 'status-pending' }}">{{ 'вкл' if p.auto_pricing_enabled else 'выкл' }}</span><a class="btn btn-small" href="/products/{{ p.id }}">Открыть</a></div>
+      {% if p.status.value == 'archived' %}
+      <form method="post" action="/products/{{ p.id }}/restore"><button class="btn btn-small btn-soft btn-wide" type="submit">Восстановить</button></form>
+      {% else %}
+      <form method="post" action="/products/{{ p.id }}/archive" data-confirm="Удалить товар из активного каталога? Его можно будет восстановить через фильтр «Архив»."><button class="btn btn-small btn-danger btn-wide" type="submit">Удалить</button></form>
+      {% endif %}
     </article>
     {% endfor %}
     {% if not products %}<div class="empty-archive">Товаров нет.</div>{% endif %}
@@ -141,15 +188,6 @@
         <div class="progress-panel" data-progress-panel hidden><div class="progress-head"><b>Расчёт</b><span data-progress-percent>0%</span></div><div class="progress-track"><i data-progress-bar></i></div><p data-progress-text></p></div>
       </form>
 
-      <form class="premium-card form" method="post" action="/products">
-        <h2>Товар вручную</h2>
-        <label>Магазин<select name="store_id" required>{% for s in stores %}<option value="{{ s.id }}" {% if s.id == selected_store_id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}</select></label>
-        <label>SKU<input name="kaspi_sku" required></label>
-        <label>Ссылка<input name="url"></label>
-        <label>Название<input name="name" required></label>
-        <div class="form-grid"><label>Цена<input name="current_price" type="number" value="0"></label><label>Мин<input name="min_price" type="number" value="0"></label><label>Макс<input name="max_price" type="number" value="0"></label><label>Себестоимость<input name="cost_price" type="number" value="0"></label></div>
-        <button class="btn btn-soft">Добавить</button>
-      </form>
     </section>
   </div>
 </section>

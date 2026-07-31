@@ -1,4 +1,4 @@
-# Render deploy — Kaspi AutoPrice v5.1
+# Render deploy — Kaspi AutoPrice v5.2
 
 ## Build
 
